@@ -1,0 +1,23 @@
+project:
+  name: ai_qa_agent
+  env: local
+
+llm:
+  provider: openai  # or anthropic / llama
+  openai_model: gpt-4o-mini
+  # set OPENAI_API_KEY environment variable for actual usage
+
+rag:
+  persist_dir: ./data/vector_store
+
+browser:
+  type: chromium        # "chromium" | "firefox" | "webkit" | "auto"
+  device_profile: "Desktop Chrome"   # Use Playwright device descriptor names or "none"
+  headed: false
+  stealth: false        # opt-in; only use for staging/with permission
+  retries_on_fail: 1    # number of fallback attempts (e.g., try firefox if chromium fails)
+  disable_http2: false  # optionally set true if you suspect HTTP/2 issues
+  use_proxy: false
+  proxy:
+    url: ""             # e.g., http://user:pass@proxy.example:3128
+    rotate: false
