@@ -74,3 +74,4 @@ node_modules/
 dist/
 build/
 " > .gitignore
+.tooling_cache/
