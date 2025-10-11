@@ -75,3 +75,12 @@ dist/
 build/
 " > .gitignore
 .tooling_cache/
+
+
+.tooling_cache/
+generated_ui_framework/run_*/
+playwright-report/
+test-results/
+node_modules/
+__pycache__/
+*.log
