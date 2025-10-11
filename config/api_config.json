@@ -1,0 +1,11 @@
+{
+  "base_url": "https://api.example.com",
+  "default_headers": {
+    "Accept": "application/json"
+  },
+  "timeout_sec": 30,
+  "retries": 1,
+  "backoff_base_sec": 0.5,
+  "max_concurrency": 8,
+  "verify_ssl": true
+}

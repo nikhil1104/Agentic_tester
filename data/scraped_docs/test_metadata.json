@@ -1,0 +1,13 @@
+{
+  "endpoints": {
+    "https://www.nseindia.com/": {
+      "count": 1,
+      "methods": [
+        "GET"
+      ],
+      "statuses": [],
+      "avg_response_time_ms": 0.0
+    }
+  },
+  "total_endpoints": 1
+}

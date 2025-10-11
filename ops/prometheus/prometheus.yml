@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Scrape the worker's Prometheus side server (recommended)
+  - job_name: "qa-worker-prom"
+    static_configs:
+      - targets: ["worker:9108"]
+
+  # Also scrape /metrics exposed by FastAPI (handy behind a single ingress)
+  - job_name: "qa-worker-http"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:8000"]

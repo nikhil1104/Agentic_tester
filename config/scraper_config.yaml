@@ -1,0 +1,44 @@
+# scraper_config.yaml - Modular configuration for AI agent reuse
+
+# Crawl parameters
+max_pages: 50
+max_depth: 3
+timeout_ms: 30000
+post_load_wait_ms: 1500
+
+# Crawl scope
+same_origin: true
+respect_robots: true   # set to false on staging if coverage is low
+exclude_patterns:
+  - /logout
+  # - /login        # comment this out if you want to capture the login form
+  - /privacy-policy
+  - /terms
+  - /cookie-policy
+
+# Performance
+rate_limit_delay_s: 2.0
+use_batch_extraction: true
+
+# Output options
+save_text: true
+save_metadata: true
+html5lib_fallback: true
+html_dir: "data/scraped_docs"
+
+# API capture
+capture_api: true
+api_body_max_bytes: 64000
+
+# Authentication (for authenticated testing)
+custom_headers:
+  # Authorization: "Bearer YOUR_API_TOKEN"
+user_agent: "Custom Bot/1.0"
+
+# Session persistence (align with AuthManager)
+storage_state_path: "auth/session_state.json"
+
+# Runtime (optional)
+headless: true
+timezone_id: "Asia/Kolkata"
+blocked_resource_types: ["image", "font", "media"]  # keep stylesheets to maintain DOM fidelity

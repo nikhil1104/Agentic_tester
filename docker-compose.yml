@@ -1,8 +1,71 @@
-version: '3.8'
+version: "3.9"
+
 services:
-  app:
-    build: .
-    volumes:
-      - .:/app
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: qa-worker
+    env_file:
+      - .env
+    environment:
+      # Safe defaults — override in .env
+      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
+      WORKER_DEFAULT_TIMEOUT: ${WORKER_DEFAULT_TIMEOUT:-1800}
+      RUNNER_REPORTS_DIR: ${RUNNER_REPORTS_DIR:-/app/reports}
+      WORKER_API_KEY: ${WORKER_API_KEY:-}
+      WORKER_ENABLE_METRICS: ${WORKER_ENABLE_METRICS:-true}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9108}
     ports:
-      - "8000:8000"
+      - "8000:8000"         # FastAPI
+      - "9108:9108"         # Prometheus (side server) if enabled
+    volumes:
+      - ./reports:/app/reports   # persistent artifacts
+    # If your image has curl installed, use this curl healthcheck.
+    # Otherwise, see the Python-based alternative below.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    networks:
+      - qa_net
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: qa-prometheus
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - worker
+    networks:
+      - qa_net
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: qa-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - qa_net
+
+networks:
+  qa_net: {}
+
+volumes:
+  prom_data: {}
+  grafana_data: {}

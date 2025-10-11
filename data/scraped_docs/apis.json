@@ -1,0 +1,31 @@
+{
+  "api_calls": [
+    {
+      "method": "GET",
+      "url": "https://www.nseindia.com/",
+      "request": {
+        "method": "GET",
+        "url": "https://www.nseindia.com/",
+        "headers": {
+          "accept-language": "en-US",
+          "upgrade-insecure-requests": "1",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "sec-ch-ua": "\"Chromium\";v=\"140\", \"Not=A?Brand\";v=\"24\", \"HeadlessChrome\";v=\"140\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\""
+        },
+        "post_data": null,
+        "timestamp": 1760047749.7156649
+      },
+      "response": {
+        "status": null,
+        "error": "request failed",
+        "timestamp": 1760047749.71572
+      },
+      "response_time_ms": 0,
+      "status": null,
+      "content_type": null,
+      "phase": "response"
+    }
+  ]
+}

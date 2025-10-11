@@ -4,7 +4,7 @@
   "username_selector": "input[name='userId']",
   "password_selector": "input[name='password']",
   "submit_selector": "button:has-text('Sign In')",
-  "username": "YOUR_USER_ID",
-  "password": "YOUR_PASSWORD",
+  "username": "sunny",
+  "password": "Liveperson@2025!!",
   "post_login_check_selector": "text=Dashboard"
 }
