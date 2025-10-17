@@ -1,0 +1,43 @@
+{
+  "mode": "local",
+  "description": "Voice interface configuration. Switch between 'local' (FREE) and 'cloud' (PAID)",
+  
+  "local": {
+    "enabled": true,
+    "model_size": "base",
+    "device": "cpu",
+    "compute_type": "int8",
+    "use_faster_whisper": true,
+    "description": "FREE - Runs offline, no API costs"
+  },
+  
+  "cloud": {
+    "enabled": false,
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "whisper-1",
+    "description": "PAID - $0.006 per minute, more accurate"
+  },
+  
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "chunk_size": 1024,
+    "silence_threshold": 0.01,
+    "silence_duration": 1.5,
+    "max_recording_duration": 30.0
+  },
+  
+  "features": {
+    "enable_tts": true,
+    "language": "en",
+    "wake_words": ["test", "check", "run", "execute"],
+    "enable_metrics": true,
+    "enable_validation": true
+  },
+  
+  "fallback": {
+    "enabled": true,
+    "order": ["cloud", "local"],
+    "description": "Try cloud first, fallback to local if fails"
+  }
+}

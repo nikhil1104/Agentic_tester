@@ -1,0 +1,35 @@
+{
+  "dashboard": {
+    "title": "AI QA Test Metrics",
+    "panels": [
+      {
+        "title": "Test Execution Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(worker_jobs_total[5m])",
+            "legendFormat": "{{stage}}"
+          }
+        ]
+      },
+      {
+        "title": "Active Jobs",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "worker_jobs_running"
+          }
+        ]
+      },
+      {
+        "title": "Job Duration",
+        "type": "heatmap",
+        "targets": [
+          {
+            "expr": "worker_job_duration_seconds"
+          }
+        ]
+      }
+    ]
+  }
+}

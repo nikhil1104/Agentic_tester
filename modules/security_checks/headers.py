@@ -6,7 +6,7 @@ Implements OWASP Secure Headers Project recommendations.
 
 from __future__ import annotations
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 import httpx
 
 from modules.security_checks.base import AbstractSecurityCheck
@@ -56,6 +56,7 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
         client: httpx.AsyncClient,
         result: SecurityCheckResult,
     ) -> None:
+        """Execute async header check."""
         try:
             response = await client.get(url, headers={"User-Agent": "SecurityEngine/1.0"})
             self._analyze_headers(response, result)
@@ -69,6 +70,7 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
         client: httpx.Client,
         result: SecurityCheckResult,
     ) -> None:
+        """Execute sync header check."""
         try:
             response = client.get(url, headers={"User-Agent": "SecurityEngine/1.0"})
             self._analyze_headers(response, result)
@@ -77,27 +79,18 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
             raise
     
     def _analyze_headers(self, response: httpx.Response, result: SecurityCheckResult):
+        """Analyze security headers with CSP parsing."""
         headers_lower = {k.lower(): v for k, v in response.headers.items()}
         
-        # Explicitly detect report-only CSP header
-        csp_ro = headers_lower.get("content-security-policy-report-only")
-        if csp_ro:
-            result.add_finding(SecurityFinding(
-                check_name="csp_report_only_header",
-                status=CheckStatus.WARNING,
-                severity=Severity.MEDIUM,
-                message="CSP is in report-only mode",
-                details={"csp-report-only": csp_ro[:200]},
-                recommendation="Use enforced 'Content-Security-Policy' (not report-only) for protection.",
-                source=self.source,
-                cwe_id="CWE-693",
-                owasp_category="A05:2021 - Security Misconfiguration",
-            ))
-        
         missing_required = []
+        present_required = []
         
+        # Check required headers
         for header in self.required_headers:
             if header in headers_lower and headers_lower[header]:
+                present_required.append(header)
+                
+                # ✨ Enhanced CSP parsing
                 if header == "content-security-policy":
                     self._analyze_csp(headers_lower[header], result)
                 else:
@@ -114,6 +107,7 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
                     ))
             else:
                 missing_required.append(header)
+                
                 result.add_finding(SecurityFinding(
                     check_name=f"header_{header}_missing",
                     status=CheckStatus.FAIL,
@@ -127,6 +121,7 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
                     references=["https://owasp.org/www-project-secure-headers/"],
                 ))
         
+        # Check recommended headers
         for header in self.recommended_headers:
             if header not in headers_lower or not headers_lower[header]:
                 result.add_finding(SecurityFinding(
@@ -142,23 +137,45 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
                 ))
     
     def _analyze_csp(self, csp_value: str, result: SecurityCheckResult):
+        """
+        ✨ Parse CSP and detect unsafe directives.
+        
+        Args:
+            csp_value: Content-Security-Policy header value
+            result: Result object to add findings to
+        """
         csp_lower = csp_value.lower()
         
-        # Unsafe directives
-        unsafe = []
-        if "'unsafe-inline'" in csp_lower:
-            unsafe.append("unsafe-inline")
-        if "'unsafe-eval'" in csp_lower:
-            unsafe.append("unsafe-eval")
+        # Check for report-only mode
+        if "report-uri" in csp_lower or "report-to" in csp_lower:
+            if not any(directive in csp_lower for directive in ["default-src", "script-src", "style-src"]):
+                result.add_finding(SecurityFinding(
+                    check_name="csp_report_only",
+                    status=CheckStatus.WARNING,
+                    severity=Severity.MEDIUM,
+                    message="CSP appears to be in report-only mode",
+                    details={"csp": csp_value[:200]},
+                    recommendation="Switch from report-only to enforcement mode",
+                    source=self.source,
+                    cwe_id="CWE-693",
+                    owasp_category="A05:2021 - Security Misconfiguration",
+                ))
         
-        if unsafe:
+        # Check for unsafe directives
+        unsafe_directives = []
+        if "'unsafe-inline'" in csp_value:
+            unsafe_directives.append("unsafe-inline")
+        if "'unsafe-eval'" in csp_value:
+            unsafe_directives.append("unsafe-eval")
+        
+        if unsafe_directives:
             result.add_finding(SecurityFinding(
                 check_name="csp_unsafe_directives",
                 status=CheckStatus.FAIL,
                 severity=Severity.HIGH,
-                message=f"CSP contains unsafe directives: {', '.join(unsafe)}",
-                details={"unsafe_directives": unsafe, "csp": csp_value[:200]},
-                recommendation="Remove unsafe-inline and unsafe-eval; use nonces or hashes.",
+                message=f"CSP contains unsafe directives: {', '.join(unsafe_directives)}",
+                details={"unsafe_directives": unsafe_directives, "csp": csp_value[:200]},
+                recommendation="Remove unsafe-inline and unsafe-eval; use nonces or hashes",
                 source=self.source,
                 cwe_id="CWE-1336",
                 owasp_category="A05:2021 - Security Misconfiguration",
@@ -169,12 +186,13 @@ class SecurityHeadersCheck(AbstractSecurityCheck):
                 check_name="csp_valid",
                 status=CheckStatus.PASS,
                 severity=Severity.INFO,
-                message="CSP present without unsafe directives",
+                message="CSP is present without unsafe directives",
                 details={"csp": csp_value[:200]},
                 source=self.source,
             ))
     
     def _get_header_recommendation(self, header: str) -> str:
+        """Get recommendation for missing header."""
         recommendations = {
             "content-security-policy": "Add: Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none';",
             "x-content-type-options": "Add: X-Content-Type-Options: nosniff",

@@ -1,0 +1,388 @@
+{
+  "https://authentication.liveperson.net": {
+    "timestamp": "2025-10-16T19:19:11.017506",
+    "result": {
+      "url": "https://authentication.liveperson.net",
+      "timestamp": "2025-10-16T19:18:39.926887Z",
+      "overall_status": "FAIL",
+      "findings": [
+        {
+          "check_name": "cookie_security_no_cookies",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "No cookies set by application",
+          "details": {
+            "cookie_count": 0
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "cookies",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "tls_version_valid",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "TLS version TLSv1.2 is acceptable",
+          "details": {
+            "tls_version": "TLSv1.2"
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "tls",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "certificate_valid",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "SSL certificate is valid (expires in 188 days)",
+          "details": {
+            "expiry_date": "Apr 22 23:59:59 2026 GMT",
+            "days_remaining": 188
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "tls",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "certificate_issuer",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "Certificate issued by: Sectigo Limited",
+          "details": {
+            "issuer": {
+              "countryName": "GB",
+              "stateOrProvinceName": "Greater Manchester",
+              "localityName": "Salford",
+              "organizationName": "Sectigo Limited",
+              "commonName": "Sectigo RSA Organization Validation Secure Server CA"
+            }
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "tls",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_content-security-policy_missing",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Required security header 'content-security-policy' is missing",
+          "details": {
+            "header": "content-security-policy"
+          },
+          "recommendation": "Add: Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none';",
+          "references": [
+            "https://owasp.org/www-project-secure-headers/"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_x-content-type-options_missing",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Required security header 'x-content-type-options' is missing",
+          "details": {
+            "header": "x-content-type-options"
+          },
+          "recommendation": "Add: X-Content-Type-Options: nosniff",
+          "references": [
+            "https://owasp.org/www-project-secure-headers/"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_x-frame-options",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "Security header 'x-frame-options' is present",
+          "details": {
+            "header": "x-frame-options",
+            "value": "SAMEORIGIN"
+          },
+          "recommendation": null,
+          "references": [
+            "https://owasp.org/www-project-secure-headers/#x-frame-options"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_referrer-policy_missing",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Required security header 'referrer-policy' is missing",
+          "details": {
+            "header": "referrer-policy"
+          },
+          "recommendation": "Add: Referrer-Policy: strict-origin-when-cross-origin",
+          "references": [
+            "https://owasp.org/www-project-secure-headers/"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_strict-transport-security",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "Security header 'strict-transport-security' is present",
+          "details": {
+            "header": "strict-transport-security",
+            "value": "max-age=31536000; includeSubDomains"
+          },
+          "recommendation": null,
+          "references": [
+            "https://owasp.org/www-project-secure-headers/#strict-transport-security"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_permissions-policy_missing",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Required security header 'permissions-policy' is missing",
+          "details": {
+            "header": "permissions-policy"
+          },
+          "recommendation": "Add: Permissions-Policy: geolocation=(), microphone=(), camera=()",
+          "references": [
+            "https://owasp.org/www-project-secure-headers/"
+          ],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_x-xss-protection_recommended",
+          "status": "WARNING",
+          "severity": "MEDIUM",
+          "message": "Recommended header 'x-xss-protection' is missing",
+          "details": {
+            "header": "x-xss-protection"
+          },
+          "recommendation": "Add 'x-xss-protection' security header",
+          "references": [],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_cross-origin-opener-policy_recommended",
+          "status": "WARNING",
+          "severity": "MEDIUM",
+          "message": "Recommended header 'cross-origin-opener-policy' is missing",
+          "details": {
+            "header": "cross-origin-opener-policy"
+          },
+          "recommendation": "Add 'cross-origin-opener-policy' security header",
+          "references": [],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_cross-origin-resource-policy_recommended",
+          "status": "WARNING",
+          "severity": "MEDIUM",
+          "message": "Recommended header 'cross-origin-resource-policy' is missing",
+          "details": {
+            "header": "cross-origin-resource-policy"
+          },
+          "recommendation": "Add 'cross-origin-resource-policy' security header",
+          "references": [],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "header_cross-origin-embedder-policy_recommended",
+          "status": "WARNING",
+          "severity": "MEDIUM",
+          "message": "Recommended header 'cross-origin-embedder-policy' is missing",
+          "details": {
+            "header": "cross-origin-embedder-policy"
+          },
+          "recommendation": "Add 'cross-origin-embedder-policy' security header",
+          "references": [],
+          "cwe_id": "CWE-693",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "headers",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "cors_not_enabled",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "CORS is not enabled (secure default - no Access-Control-Allow-Origin header)",
+          "details": {
+            "cors_enabled": false
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "cors",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "cors_preflight_supported",
+          "status": "PASS",
+          "severity": "INFO",
+          "message": "CORS preflight (OPTIONS) is supported",
+          "details": {
+            "preflight_status": 204,
+            "acao": "https://evil.com"
+          },
+          "recommendation": null,
+          "references": [],
+          "cwe_id": null,
+          "owasp_category": null,
+          "source": "cors",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "cors_reflected_origin",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "CORS policy reflects arbitrary origins - SECURITY VULNERABILITY",
+          "details": {
+            "test_origin": "https://attacker-controlled.com",
+            "reflected_origin": "https://attacker-controlled.com",
+            "impact": "Attacker can bypass CORS restrictions by setting Origin header"
+          },
+          "recommendation": "Implement whitelist of allowed origins; do not reflect Origin header",
+          "references": [
+            "https://portswigger.net/web-security/cors#server-generated-acao-header-from-client-specified-origin-header"
+          ],
+          "cwe_id": "CWE-942",
+          "owasp_category": "A05:2021 - Security Misconfiguration",
+          "source": "cors",
+          "confidence": 1.0
+        },
+        {
+          "check_name": "zero_day_sql_injection_attempt",
+          "status": "FAIL",
+          "severity": "CRITICAL",
+          "message": "Potential exploit pattern detected: SQL Injection Attempt",
+          "details": {
+            "pattern": "SQL Injection Attempt",
+            "in_response": true
+          },
+          "recommendation": "Investigate suspicious patterns in response",
+          "references": [],
+          "cwe_id": "CWE-94",
+          "owasp_category": "A03:2021 - Injection",
+          "source": "threat_detection",
+          "confidence": 0.7
+        },
+        {
+          "check_name": "zero_day_xss_payload",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Potential exploit pattern detected: XSS Payload",
+          "details": {
+            "pattern": "XSS Payload",
+            "in_response": true
+          },
+          "recommendation": "Investigate suspicious patterns in response",
+          "references": [],
+          "cwe_id": "CWE-94",
+          "owasp_category": "A03:2021 - Injection",
+          "source": "threat_detection",
+          "confidence": 0.7
+        },
+        {
+          "check_name": "zero_day_path_traversal",
+          "status": "FAIL",
+          "severity": "HIGH",
+          "message": "Potential exploit pattern detected: Path Traversal",
+          "details": {
+            "pattern": "Path Traversal",
+            "in_response": true
+          },
+          "recommendation": "Investigate suspicious patterns in response",
+          "references": [],
+          "cwe_id": "CWE-94",
+          "owasp_category": "A03:2021 - Injection",
+          "source": "threat_detection",
+          "confidence": 0.7
+        },
+        {
+          "check_name": "zero_day_command_injection",
+          "status": "FAIL",
+          "severity": "CRITICAL",
+          "message": "Potential exploit pattern detected: Command Injection",
+          "details": {
+            "pattern": "Command Injection",
+            "in_response": true
+          },
+          "recommendation": "Investigate suspicious patterns in response",
+          "references": [],
+          "cwe_id": "CWE-94",
+          "owasp_category": "A03:2021 - Injection",
+          "source": "threat_detection",
+          "confidence": 0.7
+        },
+        {
+          "check_name": "rate_limiting_not_detected",
+          "status": "WARNING",
+          "severity": "MEDIUM",
+          "message": "No rate limiting detected (all 15 rapid requests succeeded)",
+          "details": {
+            "total_requests": 15,
+            "status_200_count": 15,
+            "probe_delay_ms": 50
+          },
+          "recommendation": "Implement rate limiting to prevent abuse and DoS attacks",
+          "references": [
+            "https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/",
+            "https://cheatsheetseries.owasp.org/cheatsheets/Denial_of_Service_Cheat_Sheet.html"
+          ],
+          "cwe_id": "CWE-307",
+          "owasp_category": "A04:2021 - Insecure Design",
+          "source": "rate_limit",
+          "confidence": 0.8
+        }
+      ],
+      "summary": {
+        "total_checks": 22,
+        "passed": 8,
+        "failed": 9,
+        "warnings": 5,
+        "errors": 0,
+        "skipped": 0,
+        "risk_score": 100
+      },
+      "duration_s": 31.09,
+      "metadata": {}
+    }
+  }
+}

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import ssl
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 import httpx
 
@@ -45,7 +45,9 @@ class TLSCheck(AbstractSecurityCheck):
         client: httpx.AsyncClient,
         result: SecurityCheckResult,
     ) -> None:
+        """Execute async TLS check."""
         parsed = urlsplit(url)
+        
         if parsed.scheme != "https":
             result.add_finding(SecurityFinding(
                 check_name="https_enabled",
@@ -53,17 +55,23 @@ class TLSCheck(AbstractSecurityCheck):
                 severity=Severity.CRITICAL,
                 message="Site does not use HTTPS",
                 details={"scheme": parsed.scheme},
-                recommendation="Enable HTTPS with a valid SSL/TLS certificate.",
+                recommendation="Enable HTTPS with valid SSL/TLS certificate",
                 source=self.source,
                 cwe_id="CWE-319",
                 owasp_category="A02:2021 - Cryptographic Failures",
+                references=["https://owasp.org/www-community/vulnerabilities/Missing_Encryption_of_Sensitive_Data"],
             ))
             return
+        
+        # Validate certificate
         try:
             context = ssl.create_default_context()
             async with httpx.AsyncClient(verify=context, timeout=self.timeout_s) as test_client:
                 await test_client.get(url)
-            self._extract_certificate_details(parsed.hostname or parsed.netloc, result)
+            
+            # ✨ Extract certificate details
+            self._extract_certificate_details(parsed.netloc, result)
+            
         except httpx.HTTPError as e:
             result.add_finding(SecurityFinding(
                 check_name="tls_certificate_invalid",
@@ -75,6 +83,7 @@ class TLSCheck(AbstractSecurityCheck):
                 source=self.source,
                 cwe_id="CWE-295",
                 owasp_category="A02:2021 - Cryptographic Failures",
+                references=["https://www.ssllabs.com/ssltest/"],
             ))
     
     def run_sync(
@@ -83,7 +92,9 @@ class TLSCheck(AbstractSecurityCheck):
         client: httpx.Client,
         result: SecurityCheckResult,
     ) -> None:
+        """Execute sync TLS check."""
         parsed = urlsplit(url)
+        
         if parsed.scheme != "https":
             result.add_finding(SecurityFinding(
                 check_name="https_enabled",
@@ -91,17 +102,20 @@ class TLSCheck(AbstractSecurityCheck):
                 severity=Severity.CRITICAL,
                 message="Site does not use HTTPS",
                 details={"scheme": parsed.scheme},
-                recommendation="Enable HTTPS.",
+                recommendation="Enable HTTPS",
                 source=self.source,
                 cwe_id="CWE-319",
                 owasp_category="A02:2021 - Cryptographic Failures",
             ))
             return
+        
         try:
             context = ssl.create_default_context()
             with httpx.Client(verify=context, timeout=self.timeout_s) as test_client:
                 test_client.get(url)
-            self._extract_certificate_details(parsed.hostname or parsed.netloc, result)
+            
+            self._extract_certificate_details(parsed.netloc, result)
+            
         except httpx.HTTPError as e:
             result.add_finding(SecurityFinding(
                 check_name="tls_certificate_invalid",
@@ -113,23 +127,26 @@ class TLSCheck(AbstractSecurityCheck):
                 owasp_category="A02:2021 - Cryptographic Failures",
             ))
     
-    def _extract_certificate_details(self, host_only: str, result: SecurityCheckResult):
+    def _extract_certificate_details(self, hostname: str, result: SecurityCheckResult):
         """
-        Extract and validate certificate details. host_only must NOT contain :port
+        ✨ Extract and validate certificate details.
+        
+        Args:
+            hostname: Hostname to check
+            result: Result object to add findings to
         """
         try:
+            # Create SSL context
             context = ssl.create_default_context()
-            with socket.create_connection((host_only, 443), timeout=self.timeout_s) as sock:
-                with context.wrap_socket(sock, server_hostname=host_only) as ssock:
+            
+            # Connect and get certificate
+            with socket.create_connection((hostname, 443), timeout=self.timeout_s) as sock:
+                with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                     cert = ssock.getpeercert()
                     tls_version = ssock.version()
-
-            # TLS version ordering
-            order = {"TLSv1": 1, "TLSv1.1": 2, "TLSv1.2": 3, "TLSv1.3": 4}
-            cur = order.get(tls_version or "", 0)
-            req = order.get(self.min_tls_version, 3)
-
-            if cur and cur < req:
+            
+            # Validate TLS version
+            if tls_version and tls_version < self.min_tls_version:
                 result.add_finding(SecurityFinding(
                     check_name="tls_version_outdated",
                     status=CheckStatus.FAIL,
@@ -150,13 +167,13 @@ class TLSCheck(AbstractSecurityCheck):
                     details={"tls_version": tls_version},
                     source=self.source,
                 ))
-
-            # Certificate expiry
+            
+            # Check certificate expiry
             not_after_str = cert.get("notAfter")
             if not_after_str:
                 not_after = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
                 days_until_expiry = (not_after - datetime.utcnow()).days
-
+                
                 if days_until_expiry < 0:
                     result.add_finding(SecurityFinding(
                         check_name="certificate_expired",
@@ -190,7 +207,8 @@ class TLSCheck(AbstractSecurityCheck):
                         details={"expiry_date": not_after_str, "days_remaining": days_until_expiry},
                         source=self.source,
                     ))
-
+            
+            # Check issuer
             issuer = dict(x[0] for x in cert.get("issuer", []))
             result.add_finding(SecurityFinding(
                 check_name="certificate_issuer",
@@ -200,9 +218,9 @@ class TLSCheck(AbstractSecurityCheck):
                 details={"issuer": issuer},
                 source=self.source,
             ))
-
+            
         except Exception as e:
-            logger.warning("Failed to extract certificate details for %s: %s", host_only, e)
+            logger.warning("Failed to extract certificate details for %s: %s", hostname, e)
             result.add_finding(SecurityFinding(
                 check_name="certificate_details_extraction_failed",
                 status=CheckStatus.ERROR,

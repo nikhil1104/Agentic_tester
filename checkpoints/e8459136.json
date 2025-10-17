@@ -1,0 +1,33 @@
+{
+  "run_id": "e8459136",
+  "timestamp": "2025-10-14T16:44:38.967113",
+  "metrics": {
+    "run_id": "e8459136",
+    "total_stages": 1,
+    "successful": 0,
+    "failed": 1,
+    "skipped": 0,
+    "errors": 0,
+    "total_duration_s": 0.0,
+    "stages": [
+      {
+        "name": "ui",
+        "status": "FAILURE",
+        "duration_s": 4.011778116226196,
+        "retries": 0,
+        "error": null,
+        "metadata": {
+          "passed": false,
+          "total_tests": 0,
+          "passed_tests": 0,
+          "failed_tests": 0,
+          "return_code": 1
+        },
+        "started_at": "2025-10-14T16:44:34.955200",
+        "completed_at": "2025-10-14T16:44:38.966984"
+      }
+    ],
+    "started_at": "2025-10-14T16:44:33.346414",
+    "completed_at": null
+  }
+}

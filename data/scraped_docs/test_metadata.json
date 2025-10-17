@@ -1,6 +1,6 @@
 {
   "endpoints": {
-    "https://www.nseindia.com/": {
+    "https://www.irctc.co.in/": {
       "count": 1,
       "methods": [
         "GET"

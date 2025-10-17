@@ -1,15 +1,45 @@
 global:
-  scrape_interval: 5s
-  evaluation_interval: 5s
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'ai-qa-agent'
+    environment: 'production'
 
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# Scrape configurations
 scrape_configs:
-  # Scrape the worker's Prometheus side server (recommended)
-  - job_name: "qa-worker-prom"
+  # AI QA Workers
+  - job_name: 'ai-qa-workers'
     static_configs:
-      - targets: ["worker:9108"]
+      - targets:
+          - 'worker:9108'
+          - 'worker2:9108'  # If scaled
+          - 'worker3:9108'  # If scaled
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'go_.*'
+        action: drop
 
-  # Also scrape /metrics exposed by FastAPI (handy behind a single ingress)
-  - job_name: "qa-worker-http"
-    metrics_path: /metrics
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
     static_configs:
-      - targets: ["worker:8000"]
+      - targets: ['localhost:9090']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # ChromaDB
+  - job_name: 'chromadb'
+    static_configs:
+      - targets: ['chromadb:8000']

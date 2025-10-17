@@ -1,71 +1,489 @@
-version: "3.9"
+version: '3.8'
 
 services:
+  # ============================================================================
+  # MAIN AI QA WORKER
+  # ============================================================================
   worker:
     build:
       context: .
       dockerfile: worker/Dockerfile
-    container_name: qa-worker
-    env_file:
-      - .env
+      args:
+        - PYTHON_VERSION=3.11
+        - NODE_VERSION=18
+    container_name: ai-qa-worker
+    hostname: ai-qa-worker
     environment:
-      # Safe defaults — override in .env
-      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
-      WORKER_DEFAULT_TIMEOUT: ${WORKER_DEFAULT_TIMEOUT:-1800}
-      RUNNER_REPORTS_DIR: ${RUNNER_REPORTS_DIR:-/app/reports}
-      WORKER_API_KEY: ${WORKER_API_KEY:-}
-      WORKER_ENABLE_METRICS: ${WORKER_ENABLE_METRICS:-true}
-      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9108}
-    ports:
-      - "8000:8000"         # FastAPI
-      - "9108:9108"         # Prometheus (side server) if enabled
+      # Worker Configuration
+      - WORKER_API_KEY=${WORKER_API_KEY}
+      - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
+      - WORKER_DEFAULT_TIMEOUT=${WORKER_DEFAULT_TIMEOUT:-1800}
+      - RUNNER_REPORTS_DIR=/app/reports
+      - WORKER_ENABLE_METRICS=true
+      - WORKER_METRICS_PORT=9108
+      - WORKER_POOL_SIZE=${WORKER_POOL_SIZE:-5}
+      - WORKER_HEARTBEAT_INTERVAL=${WORKER_HEARTBEAT_INTERVAL:-30}
+      
+      # AI/API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - PERCY_TOKEN=${PERCY_TOKEN}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      
+      # Test Generator Configuration
+      - TG_ENABLE_LLM=${TG_ENABLE_LLM:-true}
+      - TG_ENABLE_ML_RISK=${TG_ENABLE_ML_RISK:-true}
+      - TG_MAX_STEPS_PER_SUITE=${TG_MAX_STEPS_PER_SUITE:-50}
+      - TG_MAX_SUITES_PER_KIND=${TG_MAX_SUITES_PER_KIND:-25}
+      - TG_MAX_API_ENDPOINTS=${TG_MAX_API_ENDPOINTS:-50}
+      
+      # Learning Memory Configuration
+      - LEARNING_MEMORY_DISABLE=${LEARNING_MEMORY_DISABLE:-0}
+      - LEARNING_MEMORY_EMBED_MODEL=${LEARNING_MEMORY_EMBED_MODEL:-all-MiniLM-L6-v2}
+      - LEARNING_MEMORY_DISABLE_EMBEDDINGS=${LEARNING_MEMORY_DISABLE_EMBEDDINGS:-0}
+      - LEARNING_MEMORY_PERSIST_DIR=/app/data/learning_memory
+      - LEARNING_MEMORY_RETENTION_DAYS=${LEARNING_MEMORY_RETENTION_DAYS:-90}
+      
+      # Scraper Configuration
+      - SCRAPER_MAX_PAGES=${SCRAPER_MAX_PAGES:-15}
+      - SCRAPER_MAX_DEPTH=${SCRAPER_MAX_DEPTH:-1}
+      - SCRAPER_TIMEOUT_MS=${SCRAPER_TIMEOUT_MS:-30000}
+      - SCRAPER_CONCURRENCY=${SCRAPER_CONCURRENCY:-3}
+      - SCRAPER_RESPECT_ROBOTS=${SCRAPER_RESPECT_ROBOTS:-true}
+      - SCRAPER_COLLECT_API_CALLS=${SCRAPER_COLLECT_API_CALLS:-true}
+      - SCRAPER_COLLECT_SECURITY_HEADERS=${SCRAPER_COLLECT_SECURITY_HEADERS:-true}
+      
+      # Runner Configuration
+      - RUNNER_MAX_RETRIES=${RUNNER_MAX_RETRIES:-2}
+      - RUNNER_RETRY_DELAY_S=${RUNNER_RETRY_DELAY_S:-5.0}
+      - RUNNER_STAGE_TIMEOUT_S=${RUNNER_STAGE_TIMEOUT_S:-1800}
+      - RUNNER_ENABLE_CIRCUIT_BREAKER=${RUNNER_ENABLE_CIRCUIT_BREAKER:-true}
+      - RUNNER_CIRCUIT_FAILURE_THRESHOLD=${RUNNER_CIRCUIT_FAILURE_THRESHOLD:-5}
+      - RUNNER_CIRCUIT_TIMEOUT_S=${RUNNER_CIRCUIT_TIMEOUT_S:-60}
+      - RUNNER_ENABLE_RECOVERY=${RUNNER_ENABLE_RECOVERY:-true}
+      - RUNNER_ENABLE_VALIDATION=${RUNNER_ENABLE_VALIDATION:-true}
+      - RUNNER_ENABLE_DRY_RUN=${RUNNER_ENABLE_DRY_RUN:-false}
+      - RUNNER_ENABLE_ASYNC=${RUNNER_ENABLE_ASYNC:-false}
+      - RUNNER_MAX_CONCURRENT_STAGES=${RUNNER_MAX_CONCURRENT_STAGES:-3}
+      - RUNNER_ENABLE_EVENTS=${RUNNER_ENABLE_EVENTS:-true}
+      
+      # Playwright Configuration
+      - PLAYWRIGHT_BROWSERS=${PLAYWRIGHT_BROWSERS:-chromium}
+      - PLAYWRIGHT_HEADED=${PLAYWRIGHT_HEADED:-false}
+      - PLAYWRIGHT_SCREENSHOT_ON_FAILURE=${PLAYWRIGHT_SCREENSHOT_ON_FAILURE:-true}
+      - PLAYWRIGHT_VIDEO=${PLAYWRIGHT_VIDEO:-on-failure}
+      - PLAYWRIGHT_SLOW_MO=${PLAYWRIGHT_SLOW_MO:-0}
+      
+      # Reporting Configuration
+      - REPORTS_DIR=/app/reports
+      - DASHBOARD_DIR=/app/reports/dashboards
+      - REPORT_ENABLE_JSON=${REPORT_ENABLE_JSON:-true}
+      - REPORT_ENABLE_HTML=${REPORT_ENABLE_HTML:-true}
+      - REPORT_ENABLE_MARKDOWN=${REPORT_ENABLE_MARKDOWN:-true}
+      - REPORT_ENABLE_JUNIT=${REPORT_ENABLE_JUNIT:-true}
+      - REPORT_ENABLE_DASHBOARD=${REPORT_ENABLE_DASHBOARD:-true}
+      
+      # Paths & Directories
+      - GENERATED_FRAMEWORKS_DIR=/app/generated_frameworks
+      - CHECKPOINT_DIR=/app/checkpoints
+      - SCRAPED_DOCS_DIR=/app/data/scraped_docs
+      - NPM_CACHE_DIR=/app/npm_cache
+      - LOGS_DIR=/app/logs
+      
+      # Logging Configuration
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - LOG_TO_FILE=${LOG_TO_FILE:-true}
+      - LOG_FILE=/app/logs/ai_qa_agent.log
+      - LOG_MAX_SIZE_MB=${LOG_MAX_SIZE_MB:-10}
+      - LOG_BACKUP_COUNT=${LOG_BACKUP_COUNT:-5}
+      
+      # Performance & Optimization
+      - ENABLE_CACHING=${ENABLE_CACHING:-true}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
+      - ENABLE_GC=${ENABLE_GC:-true}
+      - GC_INTERVAL_SECONDS=${GC_INTERVAL_SECONDS:-60}
+      - MAX_MEMORY_MB=${MAX_MEMORY_MB:-4096}
+      
+      # Security Configuration
+      - ALLOW_INSECURE_SSL=${ALLOW_INSECURE_SSL:-false}
+      - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (compatible; AI-QA-Agent/1.0)}
+      - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
+      
+      # CI/CD Integration
+      - CI_MODE=${CI_MODE:-false}
+      - CI_FAIL_FAST=${CI_FAIL_FAST:-false}
+      - CI_EXPORT_METRICS=${CI_EXPORT_METRICS:-true}
+      
+      # Experimental Features
+      - ENABLE_VISUAL_REGRESSION=${ENABLE_VISUAL_REGRESSION:-false}
+      - ENABLE_LOCATOR_HEALING=${ENABLE_LOCATOR_HEALING:-true}
+      - ENABLE_TEST_PRIORITIZATION=${ENABLE_TEST_PRIORITIZATION:-true}
+      - ENABLE_SMART_TEST_SELECTION=${ENABLE_SMART_TEST_SELECTION:-false}
+      
+      # Debug & Development
+      - DEBUG=${DEBUG:-false}
+      - VERBOSE=${VERBOSE:-false}
+      - ENABLE_PROFILING=${ENABLE_PROFILING:-false}
+      - SAVE_DEBUG_SNAPSHOTS=${SAVE_DEBUG_SNAPSHOTS:-true}
+      
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - WORKER_QUEUE_URL=redis://redis:6379/0
+      
+      # ChromaDB Configuration
+      - CHROMADB_HOST=${CHROMADB_HOST:-chromadb}
+      - CHROMADB_PORT=${CHROMADB_PORT:-8000}
+      - CHROMADB_URL=http://chromadb:8000
+      
+      # Prometheus Configuration
+      - PROMETHEUS_URL=http://prometheus:9090
+      - ENABLE_METRICS=true
+      - METRICS_ENABLED=true
+      
     volumes:
-      - ./reports:/app/reports   # persistent artifacts
-    # If your image has curl installed, use this curl healthcheck.
-    # Otherwise, see the Python-based alternative below.
+      - ./reports:/app/reports
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./auth:/app/auth
+      - ./generated_frameworks:/app/generated_frameworks
+      - ./checkpoints:/app/checkpoints
+      - ./npm_cache:/app/npm_cache
+      - ./logs:/app/logs
+      - ./data/scraped_docs:/app/data/scraped_docs
+      - ./data/learning_memory:/app/data/learning_memory
+      
+    ports:
+      - "${WORKER_PORT:-8000}:8000"
+      - "${WORKER_METRICS_PORT:-9108}:9108"
+      
+    networks:
+      - qa-network
+      
+    depends_on:
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      chromadb:
+        condition: service_started
+        
+    restart: unless-stopped
+    
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ============================================================================
+  # REDIS - Caching & Job Queue
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: ai-qa-redis
+    hostname: redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    volumes:
+      - redis-data:/data
+      - ./ops/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - qa-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 5
-      start_period: 15s
-    networks:
-      - qa_net
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
+
+  # ============================================================================
+  # PROMETHEUS - Metrics Collection
+  # ============================================================================
   prometheus:
-    image: prom/prometheus:v2.55.0
-    container_name: qa-prometheus
+    image: prom/prometheus:latest
+    container_name: ai-qa-prometheus
+    hostname: prometheus
+    user: "65534"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION_DAYS:-15}d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
     volumes:
       - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prom_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=15d"
+      - ./ops/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
-    depends_on:
-      - worker
+      - "${PROMETHEUS_PORT:-9090}:9090"
     networks:
-      - qa_net
+      - qa-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
 
+
+  # ============================================================================
+  # GRAFANA - Visualization & Dashboards
+  # ============================================================================
   grafana:
-    image: grafana/grafana:11.2.2
-    container_name: qa-grafana
+    image: grafana/grafana:latest
+    container_name: ai-qa-grafana
+    hostname: grafana
+    user: "472"
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Security
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY:-}
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      
+      # Server
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_DOMAIN=localhost
+      
+      # Database (optional - use PostgreSQL for prod)
+      - GF_DATABASE_TYPE=sqlite3
+      - GF_DATABASE_PATH=/var/lib/grafana/grafana.db
+      
+      # Plugins
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-piechart-panel
+      
+      # Auth
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      
+      # Alerting
+      - GF_ALERTING_ENABLED=true
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      
+      # Logging
+      - GF_LOG_LEVEL=${GRAFANA_LOG_LEVEL:-info}
+      - GF_LOG_MODE=console file
+      
     volumes:
-      - grafana_data:/var/lib/grafana
+      - grafana-data:/var/lib/grafana
+      - ./ops/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./ops/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./ops/grafana/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./logs/grafana:/var/log/grafana
+      
     ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
+      - "${GRAFANA_PORT:-3000}:3000"
+      
     networks:
-      - qa_net
+      - qa-network
+      
+    depends_on:
+      prometheus:
+        condition: service_healthy
+        
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+          
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
 
+
+  # ============================================================================
+  # CHROMADB - Vector Database for Learning Memory
+  # ============================================================================
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ai-qa-chromadb
+    hostname: chromadb
+    environment:
+      - ANONYMIZED_TELEMETRY=False
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=${CHROMA_AUTH_PROVIDER:-chromadb.auth.token.TokenAuthCredentialsProvider}
+      - CHROMA_SERVER_AUTH_CREDENTIALS=${CHROMA_AUTH_TOKEN:-}
+      - CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER=AUTHORIZATION
+      
+    volumes:
+      - chromadb-data:/chroma/chroma
+      - ./data/chromadb:/chroma/chroma
+      
+    ports:
+      - "${CHROMADB_PORT:-8001}:8000"
+      
+    networks:
+      - qa-network
+      
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+          
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+
+  # ============================================================================
+  # OPTIONAL: Additional Worker Nodes (for scaling)
+  # ============================================================================
+  worker2:
+    extends:
+      service: worker
+    container_name: ai-qa-worker-2
+    hostname: ai-qa-worker-2
+    ports:
+      - "8001:8000"
+      - "9109:9108"
+    environment:
+      - WORKER_METRICS_PORT=9108
+    profiles:
+      - scale
+      
+  worker3:
+    extends:
+      service: worker
+    container_name: ai-qa-worker-3
+    hostname: ai-qa-worker-3
+    ports:
+      - "8002:8000"
+      - "9110:9108"
+    environment:
+      - WORKER_METRICS_PORT=9108
+    profiles:
+      - scale
+
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
 networks:
-  qa_net: {}
+  qa-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
 
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
 volumes:
-  prom_data: {}
-  grafana_data: {}
+  redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/redis
+      
+  prometheus-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/prometheus
+      
+  grafana-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/grafana
+      
+  chromadb-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/chromadb

@@ -11,3 +11,92 @@ sentence-transformers
 beautifulsoup4>=4.14.2
 prometheus_client    # optional; only if you enable metrics
 httpx>=0.27,<1
+
+openai-whisper>=20231117  # Voice interface
+pyaudio>=0.2.14          # Audio capture
+gTTS>=2.4.0              # Text-to-speech
+pygame>=2.5.2            # Audio playback
+serper-api>=0.1.0        # SERP API (if you want Serper.dev)
+faiss-cpu>=1.7.4         # Vector similarity search
+scikit-learn>=1.3.2      # ML selector ranking
+opencv-python>=4.8.1     # Visual fingerprinting
+
+# Core Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP Clients
+httpx>=0.27.0
+requests>=2.31.0
+
+# Browser Automation
+playwright>=1.40.0
+
+# Data Processing
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+markdown>=3.5.0
+html5lib>=1.1
+
+# AI/ML - RAG Infrastructure
+chromadb>=0.4.18
+sentence-transformers>=2.2.0
+openai>=1.3.0
+
+# Vector Search & ML
+faiss-cpu>=1.7.4
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# Voice Interface (Optional)
+openai-whisper>=20231117
+pyaudio>=0.2.14
+gTTS>=2.4.0
+pygame>=2.5.0
+
+# Template & Reporting
+jinja2>=3.1.0
+fpdf>=1.7.2
+
+# Database & Storage
+redis>=5.0.0
+
+# Environment & Config
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+# Monitoring & Metrics
+prometheus-client>=0.19.0
+
+# Image Processing (Visual Regression)
+Pillow>=10.1.0
+opencv-python>=4.8.0
+
+# Testing Tools
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.2.0
+
+# API Testing
+jsonschema>=4.20.0
+
+# Utilities
+psutil>=5.9.0
+python-dateutil>=2.8.0
+
+# MCP Integration (Optional)
+mcp>=0.1.0
+
+# Serper.dev (Optional)
+# No package, uses direct API calls
+
+# Development Tools (Optional)
+black>=23.12.0
+isort>=5.13.0
+mypy>=1.7.0
+
+# Credential Management
+cryptography>=41.0.0  # For encrypted vault
+keyring>=24.0.0       # For OS keyring support

@@ -1,0 +1,33 @@
+{
+  "run_id": "aa43a942",
+  "timestamp": "2025-10-14T16:34:41.445095",
+  "metrics": {
+    "run_id": "aa43a942",
+    "total_stages": 1,
+    "successful": 0,
+    "failed": 1,
+    "skipped": 0,
+    "errors": 0,
+    "total_duration_s": 0.0,
+    "stages": [
+      {
+        "name": "ui",
+        "status": "FAILURE",
+        "duration_s": 5.063075065612793,
+        "retries": 0,
+        "error": null,
+        "metadata": {
+          "passed": false,
+          "total_tests": 0,
+          "passed_tests": 0,
+          "failed_tests": 0,
+          "return_code": 1
+        },
+        "started_at": "2025-10-14T16:34:36.381815",
+        "completed_at": "2025-10-14T16:34:41.444900"
+      }
+    ],
+    "started_at": "2025-10-14T16:34:34.581005",
+    "completed_at": null
+  }
+}

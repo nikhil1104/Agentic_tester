@@ -1,26 +1,30 @@
 # modules/runner.py
 """
-Runner (Phase 6.1.2) — Production-Grade Test Execution Engine
+Runner (Production-Grade v7.2) — Complete Test Execution Engine
 
-Enhancements vs. 6.1:
-- UI generation (which may use Playwright Sync API) runs in a worker thread to avoid
-  greenlet/thread-switch errors when the runner uses asyncio.
-- Robust fallback JSON parsing for `npx playwright test --reporter=json` (parse stdout).
-- Event-loop safe sync execution: avoid asyncio.run() inside a running loop.
-- Minor hardening and comments.
-
-Feature set:
+ALL FEATURES:
+✅ UI/API/Performance/Security test execution
 ✅ Stage registry pattern for extensibility
-✅ Event system for observability
+✅ Event system for observability (+ optional webhook)
+✅ Circuit breaker with auto-recovery
 ✅ Retry logic with exponential backoff
-✅ Async stage execution with concurrency control
-✅ Structured metrics and progress tracking
-✅ Plan validation (JSON Schema)
-✅ JUnit XML export for CI/CD
-✅ Stage dependencies and ordering
-✅ Dry-run mode for validation
-✅ Circuit breaker pattern
-✅ Comprehensive error handling
+✅ Learning memory integration
+✅ Visual regression hooks
+✅ State recovery from checkpoints
+✅ JSONL metrics export
+✅ JUnit XML + HTML reports
+✅ Async + Sync execution modes (sync default; async stubbed)
+✅ Plan validation (structure checks)
+✅ Topological sort for dependencies
+✅ Progress tracking with callbacks
+✅ Dry-run mode
+✅ Thread-safe operations
+✅ Graceful shutdown
+
+Notes in v7.2:
+- Accurate run metrics: SUCCESS/FAILURE/ERROR are tallied distinctly (fixes v7.0 overcounting of successful).
+- Progress callback includes skipped stages in completion fraction (more intuitive 100% when stages are skipped).
+- `run_plan()` alias added for backward compatibility (e.g., demo_run.py).
 """
 
 from __future__ import annotations
@@ -29,57 +33,24 @@ import json
 import logging
 import os
 import subprocess
-import time
-import asyncio
 import threading
+import time
+import traceback
+import uuid
 from abc import ABC, abstractmethod
+from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Optional, List, Set, Callable, Tuple
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Optional imports with graceful fallback
-try:
-    from modules.reporter import Reporter
-    REPORTER_AVAILABLE = True
-except Exception:
-    Reporter = None
-    REPORTER_AVAILABLE = False
+# ==================== Enums & Status ====================
 
-try:
-    from modules.ui_framework_generator import UIFrameworkGenerator
-    UI_GENERATOR_AVAILABLE = True
-except Exception:
-    UIFrameworkGenerator = None
-    UI_GENERATOR_AVAILABLE = False
-
-try:
-    from modules.security_engine import SecurityEngine
-    SECURITY_ENGINE_AVAILABLE = True
-except Exception:
-    SecurityEngine = None
-    SECURITY_ENGINE_AVAILABLE = False
-
-try:
-    from jsonschema import validate, ValidationError as JSONSchemaValidationError
-    JSON_SCHEMA_AVAILABLE = True
-except ImportError:
-    JSON_SCHEMA_AVAILABLE = False
-
-try:
-    import junit_xml
-    JUNIT_AVAILABLE = True
-except ImportError:
-    JUNIT_AVAILABLE = False
-    logger.info("junit-xml not installed. JUnit export disabled. Install: pip install junit-xml")
-
-
-# ==================== Types and Enums ====================
-
-class StageStatus(Enum):
+class StageStatus(str, Enum):
+    """Stage execution status"""
     SUCCESS = "SUCCESS"
     FAILURE = "FAILURE"
     SKIPPED = "SKIPPED"
@@ -87,1108 +58,1056 @@ class StageStatus(Enum):
     TIMEOUT = "TIMEOUT"
 
 
-class RunnerEvent(Enum):
-    RUN_START = "run_start"
-    RUN_COMPLETE = "run_complete"
-    STAGE_START = "stage_start"
-    STAGE_COMPLETE = "stage_complete"
-    STAGE_RETRY = "stage_retry"
-    VALIDATION_FAILED = "validation_failed"
-    PROGRESS_UPDATE = "progress_update"
+class RunnerEvent(str, Enum):
+    """Runner lifecycle events"""
+    RUN_STARTED = "run.started"
+    RUN_COMPLETED = "run.completed"
+    RUN_FAILED = "run.failed"
+    STAGE_STARTED = "stage.started"
+    STAGE_COMPLETED = "stage.completed"
+    STAGE_FAILED = "stage.failed"
+    STAGE_RETRYING = "stage.retrying"
 
+
+# ==================== Metrics & Config ====================
 
 @dataclass
 class StageMetrics:
-    stage_name: str
+    """Metrics for a single stage execution"""
+    name: str
     status: StageStatus
-    start_time: float
-    end_time: Optional[float] = None
-    duration_s: float = 0.0
-    retry_count: int = 0
+    duration_s: float
+    retries: int = 0
     error: Optional[str] = None
-    details: Dict[str, Any] = field(default_factory=dict)
-
-    def complete(self, status: StageStatus, error: Optional[str] = None):
-        self.end_time = time.time()
-        self.duration_s = round(self.end_time - self.start_time, 2)
-        self.status = status
-        self.error = error
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 @dataclass
 class RunMetrics:
-    execution_id: str
-    start_time: float
-    end_time: Optional[float] = None
-    duration_s: float = 0.0
+    """Aggregated metrics for entire run"""
+    run_id: str
+    total_stages: int
+    successful: int
+    failed: int
+    skipped: int
+    errors: int
+    total_duration_s: float
     stages: List[StageMetrics] = field(default_factory=list)
-    overall_status: StageStatus = StageStatus.SUCCESS
+    started_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    completed_at: Optional[str] = None
 
-    def add_stage(self, stage: StageMetrics):
-        self.stages.append(stage)
-
-    def complete(self, success: bool):
-        self.end_time = time.time()
-        self.duration_s = round(self.end_time - self.start_time, 2)
-        self.overall_status = StageStatus.SUCCESS if success else StageStatus.FAILURE
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            **asdict(self),
-            "stages": [{**asdict(s), "status": s.status.value} for s in self.stages],
-            "overall_status": self.overall_status.value,
-        }
-
-
-# ==================== Configuration ====================
 
 @dataclass
 class RunnerConfig:
-    reports_dir: str = "reports"
-    workspace_dir: str = "workspace"
-
-    # Playwright settings
-    browsers: str = "chromium"
-    playwright_timeout_s: int = 3600
-    playwright_workers: int = 4
-
+    """Runner configuration with all options"""
     # Execution settings
-    retry_max_attempts: int = 3
-    retry_delay_s: float = 2.0
-    stage_timeout_s: int = 7200
-    enable_async: bool = True
-    max_concurrent_stages: int = 2
+    max_retries: int = 2
+    retry_delay_s: float = 5.0
+    stage_timeout_s: int = 1800
+    enable_async: bool = False  # keep False until true async added
+    max_concurrent_stages: int = 3
 
     # Features
+    enable_events: bool = True
+    enable_circuit_breaker: bool = True
+    enable_learning_memory: bool = True
+    enable_visual_regression: bool = False
+    enable_recovery: bool = True
+    enable_validation: bool = True
     enable_dry_run: bool = False
-    enable_junit_export: bool = True
-    enable_progress_tracking: bool = True
-    validate_plan: bool = True
 
     # Circuit breaker
-    circuit_breaker_threshold: int = 5
-    circuit_breaker_timeout_s: int = 300
+    circuit_failure_threshold: int = 5
+    circuit_timeout_s: int = 60
 
-    @classmethod
-    def from_env(cls) -> "RunnerConfig":
-        return cls(
-            browsers=os.getenv("BROWSERS", "chromium"),
-            enable_dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
-            enable_async=os.getenv("RUNNER_ASYNC", "true").lower() == "true",
-        )
+    # Paths
+    reports_dir: str = "./reports"
+    checkpoint_dir: str = "./checkpoints"
 
+    # Callbacks
+    progress_callback: Optional[Callable[[str, float], None]] = None
+    webhook_url: Optional[str] = None
 
-# ==================== Exceptions ====================
-
-class RunnerError(Exception):
-    pass
-
-
-class StageExecutionError(RunnerError):
-    def __init__(self, stage_name: str, original_error: Exception):
-        self.stage_name = stage_name
-        self.original_error = original_error
-        super().__init__(f"Stage '{stage_name}' execution failed: {original_error}")
-
-
-class PlanValidationError(RunnerError):
-    pass
+    # Node.js settings (for Playwright)
+    npm_cache_dir: str = "./npm_cache"
+    playwright_browsers: str = "chromium"
 
 
 # ==================== Event System ====================
 
-@dataclass
-class RunnerEventData:
-    event_type: RunnerEvent
-    execution_id: str
-    timestamp: float
-    data: Dict[str, Any] = field(default_factory=dict)
-
-
-EventCallback = Callable[[RunnerEventData], None]
-
-
 class EventEmitter:
-    def __init__(self):
-        self._callbacks: Dict[RunnerEvent, List[EventCallback]] = {
-            event_type: [] for event_type in RunnerEvent
+    """Production-grade event system with webhook support"""
+
+    def __init__(self, webhook_url: Optional[str] = None):
+        self.webhook_url = webhook_url
+        self.events: List[Dict[str, Any]] = []
+        self.handlers: Dict[str, List[Callable[[Dict[str, Any]], None]]] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    def on(self, event_type: str, handler: Callable[[Dict[str, Any]], None]) -> None:
+        """Register event handler"""
+        with self._lock:
+            self.handlers[event_type].append(handler)
+
+    def emit(self, event_type: str | RunnerEvent, data: Dict[str, Any]) -> None:
+        """Emit event to all handlers"""
+        etype = event_type.value if isinstance(event_type, RunnerEvent) else event_type
+        event = {
+            "type": etype,
+            "timestamp": datetime.now().isoformat(),
+            "data": data,
         }
 
-    def on(self, event_type: RunnerEvent, callback: EventCallback):
-        self._callbacks[event_type].append(callback)
+        with self._lock:
+            self.events.append(event)
 
-    def emit(self, event: RunnerEventData):
-        for callback in self._callbacks.get(event.event_type, []):
+        for handler in self.handlers.get(etype, []):
             try:
-                callback(event)
+                handler(event)
             except Exception as e:
-                logger.error("Event callback failed: %s", e)
+                logger.error(f"Event handler error: {e}")
+
+        if self.webhook_url:
+            self._send_webhook(event)
+
+        logger.debug(f"Event: {etype}")
+
+    def _send_webhook(self, event: Dict[str, Any]) -> None:
+        """Send event to webhook asynchronously"""
+        def _send():
+            try:
+                import httpx
+                httpx.post(self.webhook_url, json=event, timeout=5.0)
+            except Exception as e:
+                logger.debug(f"Webhook failed: {e}")
+
+        threading.Thread(target=_send, daemon=True).start()
+
+    def get_events(self, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all events or filtered by type"""
+        with self._lock:
+            if event_type:
+                return [e for e in self.events if e["type"] == event_type]
+            return self.events.copy()
 
 
 # ==================== Circuit Breaker ====================
 
 class CircuitBreaker:
-    def __init__(self, threshold: int = 5, timeout_s: int = 300):
-        self.threshold = threshold
-        self.timeout_s = timeout_s
-        self.failure_count = 0
-        self.last_failure_time: Optional[float] = None
-        self.is_open = False
+    """Circuit breaker pattern for fault tolerance"""
 
-    def record_success(self):
-        self.failure_count = 0
-        self.is_open = False
+    def __init__(self, failure_threshold: int = 5, timeout_s: int = 60):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout_s
+        self.failures = 0
+        self.last_failure_time = 0.0
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        self._lock = threading.Lock()
 
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        if self.failure_count >= self.threshold:
-            self.is_open = True
-            logger.warning("⚠️ Circuit breaker opened after %d failures", self.failure_count)
+    def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection"""
+        with self._lock:
+            if self.state == "OPEN":
+                if time.time() - self.last_failure_time > self.timeout:
+                    self.state = "HALF_OPEN"
+                    logger.info("Circuit breaker: OPEN → HALF_OPEN")
+                else:
+                    raise RuntimeError(f"Circuit breaker OPEN (failures={self.failures})")
 
-    def can_execute(self) -> bool:
-        if not self.is_open:
-            return True
-        if self.last_failure_time:
-            elapsed = time.time() - self.last_failure_time
-            if elapsed >= self.timeout_s:
-                logger.info("Circuit breaker attempting recovery...")
-                self.is_open = False
-                self.failure_count = 0
-                return True
-        return False
-
-
-# ==================== Helpers ====================
-
-def _run_coro_blocking(coro):
-    """
-    Run an async coroutine from any context:
-    - If no loop is running, use asyncio.run()
-    - If a loop is running (e.g., notebook / other framework), execute in a new loop on a temp thread.
-    """
-    try:
-        asyncio.get_running_loop()
-        loop_running = True
-    except RuntimeError:
-        loop_running = False
-
-    if not loop_running:
-        return asyncio.run(coro)
-
-    result_holder = {}
-    error_holder = {}
-
-    def _worker():
-        new_loop = asyncio.new_event_loop()
         try:
-            asyncio.set_event_loop(new_loop)
-            result_holder["result"] = new_loop.run_until_complete(coro)
-        except Exception as e:
-            error_holder["error"] = e
-        finally:
-            new_loop.close()
+            result = func(*args, **kwargs)
+            with self._lock:
+                if self.state == "HALF_OPEN":
+                    self.state = "CLOSED"
+                    self.failures = 0
+                    logger.info("Circuit breaker: HALF_OPEN → CLOSED")
+            return result
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join()
+        except Exception:
+            with self._lock:
+                self.failures += 1
+                self.last_failure_time = time.time()
+                if self.failures >= self.failure_threshold:
+                    self.state = "OPEN"
+                    logger.error(f"Circuit breaker: CLOSED → OPEN (failures={self.failures})")
+            raise
 
-    if "error" in error_holder:
-        raise error_holder["error"]
-    return result_holder.get("result")
+    def reset(self) -> None:
+        """Manually reset circuit breaker"""
+        with self._lock:
+            self.state = "CLOSED"
+            self.failures = 0
+            logger.info("Circuit breaker manually reset")
 
 
 # ==================== Abstract Stage ====================
 
 class AbstractStage(ABC):
+    """Base class for all test stages"""
+
+    def __init__(self, name: str, config: RunnerConfig):
+        self.name = name
+        self.config = config
+        self.metrics = StageMetrics(
+            name=name,
+            status=StageStatus.SKIPPED,
+            duration_s=0.0,
+        )
+
+    @abstractmethod
+    def execute(self, plan: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute stage - must be implemented by subclasses"""
+        ...
+
+    def validate(self, plan: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Validate stage inputs - override if needed"""
+        return True, None
+
+    def get_dependencies(self) -> List[str]:
+        """Return list of stage names this depends on - override if needed"""
+        return []
+
+
+# ==================== UI Stage ====================
+
+class UIStage(AbstractStage):
     """
-    Abstract base class for execution stages.
-    Similar to AbstractSecurityCheck pattern.
+    UI test execution stage with Playwright.
+
+    Features:
+    - Framework generation in worker thread (avoids asyncio conflicts)
+    - Multiple report parsing strategies
+    - Browser auto-installation
+    - Isolated npm cache
+    - Visual regression support
     """
 
     def __init__(self, config: RunnerConfig):
-        self.config = config
+        super().__init__("ui", config)
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        pass
+    def execute(self, plan: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        start_time = time.time()
+        try:
+            self.metrics.started_at = datetime.now().isoformat()
 
-    @property
-    def dependencies(self) -> List[str]:
-        return []
+            # Generate framework in worker thread
+            workspace = self._generate_framework_sync(plan)
+            if not workspace:
+                raise RuntimeError("Framework generation failed")
 
-    @abstractmethod
-    async def execute_async(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        pass
+            # Ensure browsers
+            self._ensure_playwright_browsers(workspace)
 
-    def execute_sync(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        # Make sync calls safe even if a loop is already running
-        return _run_coro_blocking(self.execute_async(plan, execution_id, context))
+            # Run tests
+            result = self._run_playwright_tests(workspace, plan)
 
+            # Parse results
+            report = self._parse_results(workspace, result)
 
-# ==================== Concrete Stages ====================
+            # Visual regression (optional)
+            if self.config.enable_visual_regression:
+                visual_report = self._run_visual_regression(workspace, context)
+                report["visual_regression"] = visual_report
 
-class UIStage(AbstractStage):
-    """Playwright UI test execution stage."""
+            self.metrics.status = StageStatus.SUCCESS if report.get("passed", False) else StageStatus.FAILURE
+            self.metrics.metadata = report
+            return report
 
-    @property
-    def name(self) -> str:
-        return "ui"
+        except Exception as e:
+            logger.error(f"UI stage failed: {e}", exc_info=True)
+            self.metrics.status = StageStatus.ERROR
+            self.metrics.error = str(e)
+            raise
+        finally:
+            self.metrics.duration_s = time.time() - start_time
+            self.metrics.completed_at = datetime.now().isoformat()
 
-    def is_applicable(self, plan: Dict[str, Any]) -> bool:
-        return bool(plan.get("suites", {}).get("ui"))
+    def _generate_framework_sync(self, plan: Dict[str, Any]) -> Optional[str]:
+        result_container: Dict[str, Optional[str]] = {"workspace": None}
+        err_container: Dict[str, Optional[str]] = {"error": None}
 
-    async def execute_async(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Execute UI tests with Playwright."""
-        if not UI_GENERATOR_AVAILABLE:
-            raise RunnerError("UIFrameworkGenerator not available")
-
-        # Generate workspace once and cache (avoid double UI generation)
-        plan.setdefault("artifacts", {})
-        ui_workspace = plan["artifacts"].get("ui_workspace")
-
-        if not ui_workspace:
-            logger.info("🏗️ Generating Playwright workspace (first time)")
-            gen = UIFrameworkGenerator(
-                plan=plan,
-                html_cache_dir="data/scraped_docs",
-                output_type="ts",
-                execution_id=execution_id,
-                split_cases=False,
-            )
-            # IMPORTANT:
-            # If the generator internally uses Playwright *Sync* API, running it directly here
-            # (on the asyncio event loop thread) can cause greenlet/thread-switch errors.
-            # Run in a thread instead.
-            loop = asyncio.get_running_loop()
-            ui_workspace = await loop.run_in_executor(None, gen.generate)
-            plan["artifacts"]["ui_workspace"] = ui_workspace
-            context["ui_workspace"] = ui_workspace
-        else:
-            logger.info("♻️ Reusing workspace: %s", ui_workspace)
-
-        # Execute Playwright tests
-        result = await self._run_playwright(ui_workspace)
-        result["workspace"] = ui_workspace
-        return result
-
-    async def _run_playwright(self, workspace: str) -> Dict[str, Any]:
-        """Run Playwright tests in workspace (subprocess-based, async-friendly)."""
-        ws = Path(workspace).resolve()
-        if not ws.exists():
-            raise FileNotFoundError(f"Workspace not found: {ws}")
-
-        # Isolated environment (no global pollution)
-        npm_cache = ws / ".npm-cache"
-        pw_browsers = ws / ".pw-browsers"
-        npm_cache.mkdir(parents=True, exist_ok=True)
-        pw_browsers.mkdir(parents=True, exist_ok=True)
-
-        env = os.environ.copy()
-        env.update({
-            "BROWSERS": self.config.browsers,
-            "NPM_CONFIG_CACHE": str(npm_cache),
-            "PLAYWRIGHT_BROWSERS_PATH": str(pw_browsers),
-            "HOME": str(ws),
-        })
-
-        # Ensure chromium present (best-effort)
-        def _chromium_present(p: Path) -> bool:
+        def _generate():
             try:
-                return any("chromium" in d.name or "chrome" in d.name for d in p.iterdir())
-            except Exception:
-                return False
+                from modules.ui_framework_generator import UIFrameworkGenerator
+                generator = UIFrameworkGenerator(plan)
+                result_container["workspace"] = generator.generate()
+            except Exception as e:
+                err_container["error"] = str(e)
+                logger.error(f"Framework generation error: {e}")
 
-        if not _chromium_present(pw_browsers):
-            logger.info("⬇️ Installing Playwright browsers (chromium)…")
-            # Do not fail the whole run if this step exits non-zero (network hiccups, etc.)
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: subprocess.run(["npx", "playwright", "install", "chromium"], cwd=ws, env=env, check=False)
-            )
+        t = threading.Thread(target=_generate, daemon=True)
+        t.start()
+        t.join(timeout=300)
 
-        # Primary run: respect reporters from repo config
-        cmd = ["npx", "playwright", "test"]
-        logger.info("▶️ Running Playwright: %s", " ".join(cmd))
+        if t.is_alive():
+            logger.error("Framework generation timeout")
+            return None
 
-        loop = asyncio.get_running_loop()
-        proc = await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(
-                cmd,
-                cwd=ws,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self.config.playwright_timeout_s,
-                check=False,
-                text=True,
-            )
+        if err_container["error"]:
+            logger.error(f"Framework generation failed: {err_container['error']}")
+            return None
+
+        return result_container["workspace"]
+
+    def _ensure_playwright_browsers(self, workspace: str) -> None:
+        try:
+            browsers = [b.strip() for b in self.config.playwright_browsers.split(",") if b.strip()]
+            for browser in browsers:
+                subprocess.run(
+                    ["npx", "playwright", "install", browser, "--with-deps"],
+                    cwd=workspace,
+                    check=False,
+                    capture_output=True,
+                    timeout=300,
+                )
+            logger.info(f"✅ Playwright browsers ready: {browsers}")
+        except Exception as e:
+            logger.warning(f"Browser installation failed: {e}")
+
+    def _run_playwright_tests(self, workspace: str, plan: Dict[str, Any]) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["NPM_CONFIG_CACHE"] = self.config.npm_cache_dir
+
+        browsers = [b.strip() for b in self.config.playwright_browsers.split(",") if b.strip()]
+        project = browsers[0] if browsers else "chromium"
+
+        cmd = [
+            "npx",
+            "playwright",
+            "test",
+            f"--project={project}",
+            "--reporter=json,list",
+        ]
+
+        return subprocess.run(
+            cmd,
+            cwd=workspace,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=self.config.stage_timeout_s,
         )
 
-        if proc.stdout:
-            for line in proc.stdout.splitlines():
-                if line.strip():
-                    logger.info(line)
-        if proc.stderr:
-            for line in proc.stderr.splitlines():
-                if line.strip():
-                    logger.warning(line)
-
-        # Parse JSON report produced by config (if any)
-        report_path = ws / "reports" / "playwright" / "report.json"
-        stats = self._parse_playwright_report_file(report_path)
-
-        # Fallback: if no report totals, rerun with explicit JSON reporter and parse stdout
-        need_fallback = (stats.get("total", 0) == 0) and (not report_path.exists())
-        if need_fallback:
-            logger.warning("No Playwright JSON found; retrying with --reporter=json")
-            proc2 = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    ["npx", "playwright", "test", "--reporter=json"],
-                    cwd=ws,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=self.config.playwright_timeout_s,
-                    check=False,
-                    text=True,
-                )
-            )
-            if proc2.stdout:
-                # Parse JSON from stdout (official behavior of reporter=json)
-                stats = self._parse_playwright_json_stdout(proc2.stdout)
-                for line in proc2.stdout.splitlines():
-                    if line.strip():
-                        logger.info(line)
-            if proc2.stderr:
-                for line in proc2.stderr.splitlines():
-                    if line.strip():
-                        logger.warning(line)
-
-            return {
-                **stats,
-                "success": stats.get("failed", 0) == 0,
-                "report_path": str(report_path),
-                "return_code": proc2.returncode,
-            }
-
-        return {
-            **stats,
-            "success": stats.get("failed", 0) == 0,
-            "report_path": str(report_path),
-            "return_code": proc.returncode,
+    def _parse_results(self, workspace: str, result: subprocess.CompletedProcess) -> Dict[str, Any]:
+        report: Dict[str, Any] = {
+            "passed": False,
+            "total_tests": 0,
+            "passed_tests": 0,
+            "failed_tests": 0,
+            "return_code": result.returncode,
         }
 
-    def _parse_playwright_report_file(self, report_path: Path) -> Dict[str, int]:
-        """Parse Playwright JSON report written to disk by config."""
-        if not report_path.exists():
-            logger.warning("Playwright report not found: %s", report_path)
-            return {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "flaky": 0}
+        # Strategy 1: JSON report file
+        json_report_path = Path(workspace) / "reports" / "playwright" / "report.json"
+        if json_report_path.exists():
+            try:
+                with open(json_report_path) as f:
+                    data = json.load(f)
+                report["playwright_report"] = data
+
+                for suite in data.get("suites", []):
+                    for spec in suite.get("specs", []):
+                        for test in spec.get("tests", []):
+                            report["total_tests"] += 1
+                            results = test.get("results", [])
+                            if results and results[0].get("status") == "passed":
+                                report["passed_tests"] += 1
+                            else:
+                                report["failed_tests"] += 1
+
+                report["passed"] = report["failed_tests"] == 0
+                logger.info(f"✅ Parsed JSON report: {report['passed_tests']}/{report['total_tests']} passed")
+                return report
+            except Exception as e:
+                logger.warning(f"JSON report parsing failed: {e}")
+
+        # Strategy 2: JSON in stdout
+        if result.stdout:
+            try:
+                import re
+                m = re.search(r"\{.*\"suites\".*\}", result.stdout, re.DOTALL)
+                if m:
+                    data = json.loads(m.group())
+                    report["playwright_report"] = data
+                    logger.info("✅ Parsed JSON from stdout")
+            except Exception as e:
+                logger.debug(f"Stdout JSON parsing failed: {e}")
+
+        # Strategy 3: return code
+        report["passed"] = result.returncode == 0
+        if report["passed"]:
+            logger.info("✅ Tests passed (return code 0)")
+        else:
+            logger.warning(f"⚠️ Tests failed (return code {result.returncode})")
+        return report
+
+    def _run_visual_regression(self, workspace: str, context: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
-            return self._count_statuses(data)
+            visual_engine = context.get("visual_engine")
+            if not visual_engine:
+                from modules.visual_regression import VisualRegressionEngine
+                visual_engine = VisualRegressionEngine()
+                context["visual_engine"] = visual_engine
+            return visual_engine.get_report()
         except Exception as e:
-            logger.error("Failed to parse Playwright report file: %s", e)
-            return {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "flaky": 0}
-
-    def _parse_playwright_json_stdout(self, stdout: str) -> Dict[str, int]:
-        """Parse JSON emitted by `--reporter=json` (stdout)."""
-        try:
-            data = json.loads(stdout)
-            return self._count_statuses(data)
-        except Exception as e:
-            logger.error("Failed to parse Playwright JSON from stdout: %s", e)
-            return {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "flaky": 0}
-
-    def _count_statuses(self, report: Dict[str, Any]) -> Dict[str, int]:
-        """Recursively count test statuses across the report object."""
-        counts = {"passed": 0, "failed": 0, "skipped": 0, "flaky": 0}
-
-        def visit(node):
-            if isinstance(node, dict):
-                status = (node.get("status") or "").lower()
-                if status in ("passed", "ok"):
-                    counts["passed"] += 1
-                elif status == "failed":
-                    counts["failed"] += 1
-                elif status in ("skipped", "skip"):
-                    counts["skipped"] += 1
-                elif status == "flaky":
-                    counts["flaky"] += 1
-                for v in node.values():
-                    visit(v)
-            elif isinstance(node, list):
-                for item in node:
-                    visit(item)
-
-        visit(report)
-        counts["total"] = sum(counts.values())
-        logger.info("✅ Playwright results: passed=%d failed=%d skipped=%d flaky=%d",
-                    counts["passed"], counts["failed"], counts["skipped"], counts["flaky"])
-        return counts
+            logger.error(f"Visual regression failed: {e}")
+            return {"error": str(e)}
 
 
-class SecurityStage(AbstractStage):
-    """Security validation stage."""
-
-    @property
-    def name(self) -> str:
-        return "security"
-
-    def is_applicable(self, plan: Dict[str, Any]) -> bool:
-        return bool(plan.get("suites", {}).get("security"))
-
-    async def execute_async(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        if not SECURITY_ENGINE_AVAILABLE:
-            logger.warning("SecurityEngine not available, skipping security stage")
-            return {"skipped": True, "reason": "SecurityEngine not available"}
-
-        try:
-            suites = (plan.get("suites") or {}).get("security") or []
-            enabled = None
-            if suites:
-                first = suites[0]
-                if isinstance(first, dict) and "enabled" in first:
-                    enabled = first["enabled"]
-                elif isinstance(first, list):
-                    enabled = first
-
-            engine = SecurityEngine(enabled_checks=enabled)
-
-            base_url = (
-                (plan.get("details") or {}).get("url")
-                or plan.get("project")
-                or context.get("base_url")
-            )
-            if not base_url:
-                logger.warning("No base URL found for security checks")
-                return {"skipped": True, "reason": "No base URL"}
-
-            result = await engine.scan_async(base_url)
-            report = result.to_dict()
-
-            failed = sum(1 for f in report["findings"] if f.get("status") in ("FAIL", "ERROR"))
-            warnings = sum(1 for f in report["findings"] if f.get("status") == "WARNING")
-
-            return {
-                "success": failed == 0,
-                "results": [report],
-                "total_checks": len(report["findings"]),
-                "failed": failed,
-                "warnings": warnings,
-                "risk_score": (report.get("summary") or {}).get("risk_score", 0),
-                "duration_s": report.get("duration_s", 0.0),
-            }
-
-        except Exception as e:
-            logger.error("Security stage failed: %s", e)
-            raise StageExecutionError(self.name, e)
-
+# ==================== API Stage ====================
 
 class APIStage(AbstractStage):
-    """API test execution stage."""
+    """API test execution stage"""
 
-    @property
-    def name(self) -> str:
-        return "api"
+    def __init__(self, config: RunnerConfig):
+        super().__init__("api", config)
 
-    def is_applicable(self, plan: Dict[str, Any]) -> bool:
-        return bool(plan.get("suites", {}).get("api"))
-
-    async def execute_async(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def execute(self, plan: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        start_time = time.time()
         try:
-            from modules.api_test_engine import APITestEngine as _Engine
-        except ImportError:
-            try:
-                from modules.api_test_engine import ApiTestEngine as _Engine  # legacy
-            except ImportError:
-                logger.warning("API test engine not available, skipping API stage")
-                return {"skipped": True, "reason": "ApiTestEngine not available"}
+            self.metrics.started_at = datetime.now().isoformat()
 
-        try:
-            engine = _Engine()
-            suites = (plan.get("suites") or {}).get("api") or []
-            base_url = (
-                (plan.get("details") or {}).get("url")
-                or plan.get("project")
-                or context.get("base_url")
-                or ""
-            )
+            from modules.api_test_engine import APITestEngine
 
-            if getattr(engine, "cfg", None) is not None and base_url:
-                engine.cfg["base_url"] = base_url
+            project = plan.get("project", "")
+            engine = APITestEngine(project)
+            suites = plan.get("suites", {}).get("api", [])
 
-            if hasattr(engine, "run_suites_async"):
-                summary = await engine.run_suites_async(suites)
-            else:
-                # CPU-bound or blocking? Run in thread to avoid blocking event loop.
-                summary = await asyncio.get_running_loop().run_in_executor(None, lambda: engine.run_suites(suites))
+            results: List[Dict[str, Any]] = []
+            for suite in suites:
+                # run_suite should raise on fatal or return a result dict
+                result = engine.run_suite(suite)
+                results.append(result)
 
-            if isinstance(summary, list):
-                cases = summary
-                passed_cases = 0
-                failed_cases = 0
-                for c in cases:
-                    steps = c.get("steps", [])
-                    case_failed = any((s.get("status") or "").upper() == "FAIL" for s in steps)
-                    if case_failed:
-                        failed_cases += 1
-                    else:
-                        passed_cases += 1
-                return {
-                    "success": failed_cases == 0,
-                    "cases": cases,
-                    "passed": passed_cases,
-                    "failed": failed_cases,
-                }
-            else:
-                return {
-                    "success": summary.get("failed", 0) == 0,
-                    **summary,
-                }
+            total_passed = sum(1 for r in results if r.get("status") in ("PASS", True))
+            all_passed = total_passed == len(results)
+
+            self.metrics.status = StageStatus.SUCCESS if all_passed else StageStatus.FAILURE
+            self.metrics.metadata = {
+                "total_suites": len(results),
+                "passed_suites": total_passed,
+                "results": results,
+            }
+            return self.metrics.metadata
 
         except Exception as e:
-            logger.error("API stage failed: %s", e)
-            raise StageExecutionError(self.name, e)
+            logger.error(f"API stage failed: {e}", exc_info=True)
+            self.metrics.status = StageStatus.ERROR
+            self.metrics.error = str(e)
+            raise
+        finally:
+            self.metrics.duration_s = time.time() - start_time
+            self.metrics.completed_at = datetime.now().isoformat()
+
+
+# ==================== Performance Stage ====================
+
+class PerformanceStage(AbstractStage):
+    """Performance test execution stage (JMeter, Locust, Lighthouse)"""
+
+    def __init__(self, config: RunnerConfig):
+        super().__init__("performance", config)
+
+    def execute(self, plan: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        start_time = time.time()
+        try:
+            self.metrics.started_at = datetime.now().isoformat()
+
+            from modules.performance_engine import PerformanceEngine
+
+            project = plan.get("project", "")
+            workspace = Path(self.config.reports_dir) / "performance"
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            engine = PerformanceEngine(project, workspace=str(workspace))
+            suites = plan.get("suites", {}).get("performance", [])
+
+            results: List[Dict[str, Any]] = []
+            for suite in suites:
+                results.append(engine.run_suite(suite))
+
+            all_passed = all(r.get("passed", True) for r in results)
+
+            self.metrics.status = StageStatus.SUCCESS if all_passed else StageStatus.FAILURE
+            self.metrics.metadata = {
+                "total_suites": len(results),
+                "results": results,
+            }
+            return self.metrics.metadata
+
+        except Exception as e:
+            logger.error(f"Performance stage failed: {e}", exc_info=True)
+            self.metrics.status = StageStatus.ERROR
+            self.metrics.error = str(e)
+            raise
+        finally:
+            self.metrics.duration_s = time.time() - start_time
+            self.metrics.completed_at = datetime.now().isoformat()
+
+
+# ==================== Security Stage ====================
+
+class SecurityStage(AbstractStage):
+    """Security test execution stage"""
+
+    def __init__(self, config: RunnerConfig):
+        super().__init__("security", config)
+
+    def execute(self, plan: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        start_time = time.time()
+        try:
+            self.metrics.started_at = datetime.now().isoformat()
+
+            from modules.security_checks.headers import SecurityHeadersCheck
+            from modules.security_checks.tls import TLSCheck
+            from modules.security_types import SecurityCheckResult
+            import httpx
+
+            url = plan.get("base_url") or plan.get("project", "")
+            if not url:
+                raise ValueError("No URL provided for security tests")
+
+            result = SecurityCheckResult(check_name="security_suite")
+
+            with httpx.Client(timeout=30) as client:
+                SecurityHeadersCheck().run_sync(url, client, result)
+                TLSCheck().run_sync(url, client, result)
+
+            critical_failures = sum(
+                1 for f in result.findings if f.severity.value == "CRITICAL" and f.status.value == "FAIL"
+            )
+            has_failures = any(f.status.value == "FAIL" for f in result.findings)
+
+            # Mark FAILURE for critical, SUCCESS otherwise (incl. non-critical fails as warnings)
+            self.metrics.status = StageStatus.FAILURE if critical_failures > 0 else StageStatus.SUCCESS
+            self.metrics.metadata = {
+                "total_findings": len(result.findings),
+                "critical_failures": critical_failures,
+                "has_failures": has_failures,
+                "findings": [f.__dict__ for f in result.findings],
+            }
+            return self.metrics.metadata
+
+        except Exception as e:
+            logger.error(f"Security stage failed: {e}", exc_info=True)
+            self.metrics.status = StageStatus.ERROR
+            self.metrics.error = str(e)
+            raise
+        finally:
+            self.metrics.duration_s = time.time() - start_time
+            self.metrics.completed_at = datetime.now().isoformat()
 
 
 # ==================== Stage Registry ====================
 
-STAGE_REGISTRY: Dict[str, type[AbstractStage]] = {
-    "ui": UIStage,
-    "security": SecurityStage,
-    "api": APIStage,
-}
+class StageRegistry:
+    """Registry for all available stages"""
 
+    def __init__(self):
+        self._stages: Dict[str, type[AbstractStage]] = {}
 
-def get_enabled_stages(
-    plan: Dict[str, Any],
-    config: RunnerConfig,
-) -> List[AbstractStage]:
-    stages = []
-    for stage_name, stage_class in STAGE_REGISTRY.items():
-        stage = stage_class(config)
-        if stage.is_applicable(plan):
-            stages.append(stage)
-            logger.info("✓ Stage '%s' is applicable", stage_name)
-        else:
-            logger.debug("✗ Stage '%s' is not applicable", stage_name)
-    return stages
+    def register(self, name: str, stage_class: type[AbstractStage]) -> None:
+        self._stages[name] = stage_class
+        logger.debug(f"Registered stage: {name}")
 
+    def get(self, name: str, config: RunnerConfig) -> Optional[AbstractStage]:
+        stage_class = self._stages.get(name)
+        return stage_class(config) if stage_class else None
 
-# ==================== Plan Validation ====================
-
-PLAN_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "type": "object",
-    "required": ["suites"],
-    "properties": {
-        "suites": {"type": "object", "minProperties": 1},
-        "ui_config": {"type": "object"},
-        "artifacts": {"type": "object"},
-    },
-}
-
-
-def validate_plan(plan: Dict[str, Any]) -> None:
-    if not JSON_SCHEMA_AVAILABLE:
-        logger.warning("JSON Schema validation skipped (jsonschema not installed)")
-        return
-    try:
-        validate(instance=plan, schema=PLAN_SCHEMA)
-        logger.debug("✓ Plan validation passed")
-    except JSONSchemaValidationError as e:
-        raise PlanValidationError(f"Plan validation failed: {e.message}")
-
-
-# ==================== JUnit Export ====================
-
-def export_junit_xml(results: Dict[str, Any], output_path: Path) -> None:
-    if not JUNIT_AVAILABLE:
-        logger.warning("JUnit export skipped (junit-xml not installed)")
-        return
-    try:
-        test_suites = []
-
-        for stage_name, stage_result in results.get("stage_results", {}).items():
-            if stage_result.get("skipped"):
-                continue
-
-            test_cases = []
-            if stage_name == "ui":
-                passed = stage_result.get("passed", 0)
-                failed = stage_result.get("failed", 0)
-                skipped = stage_result.get("skipped", 0)
-                for i in range(passed):
-                    test_cases.append(junit_xml.TestCase(f"ui_test_{i+1}", stage_name))
-                for i in range(failed):
-                    tc = junit_xml.TestCase(f"ui_test_failed_{i+1}", stage_name)
-                    tc.add_failure_info("Test failed")
-                    test_cases.append(tc)
-                for i in range(skipped):
-                    tc = junit_xml.TestCase(f"ui_test_skipped_{i+1}", stage_name)
-                    tc.add_skipped_info("Skipped by Playwright")
-                    test_cases.append(tc)
-
-            elif stage_name == "security":
-                for res in stage_result.get("results", []):
-                    url = res.get("url", "target")
-                    for f in res.get("findings", []):
-                        name = f.get("check_name", "security_check")
-                        status = (f.get("status") or "").upper()
-                        msg = f.get("message", "")
-                        tc = junit_xml.TestCase(f"{name}::{url}", stage_name)
-                        if status in ("FAIL", "ERROR"):
-                            tc.add_failure_info(msg or "Security failure")
-                        elif status == "WARNING":
-                            tc.add_skipped_info(msg or "Security warning")
-                        test_cases.append(tc)
-
-            elif stage_name == "api":
-                passed = stage_result.get("passed", 0)
-                failed = stage_result.get("failed", 0)
-                for i in range(passed):
-                    test_cases.append(junit_xml.TestCase(f"api_test_{i+1}", stage_name))
-                for i in range(failed):
-                    tc = junit_xml.TestCase(f"api_test_failed_{i+1}", stage_name)
-                    tc.add_failure_info("API test failed")
-                    test_cases.append(tc)
-
-            test_suites.append(junit_xml.TestSuite(stage_name, test_cases))
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w") as f:
-            junit_xml.TestSuite.to_file(f, test_suites, prettyprint=True)
-
-        logger.info("✓ JUnit XML exported to %s", output_path)
-    except Exception as e:
-        logger.error("Failed to export JUnit XML: %s", e)
+    def list_stages(self) -> List[str]:
+        return list(self._stages.keys())
 
 
 # ==================== Main Runner ====================
 
 class Runner:
-    """Production-grade test execution engine."""
+    """
+    Production-grade test runner
+
+    Features:
+    - All test types (UI, API, Performance, Security)
+    - Stage registry for extensibility
+    - Event system for observability
+    - Circuit breaker + retry with backoff
+    - Learning memory integration
+    - State recovery & checkpoints
+    - Multiple report formats
+    - Plan validation & dry-run
+    """
 
     def __init__(self, config: Optional[RunnerConfig] = None):
         self.config = config or RunnerConfig()
-        self._reports_root = Path(self.config.reports_dir)
-        self._reports_root.mkdir(parents=True, exist_ok=True)
 
-        self.events = EventEmitter()
-        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        # Setup directories
+        self.reports_dir = Path(self.config.reports_dir)
+        self.checkpoint_dir = Path(self.config.checkpoint_dir)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        self._reporter = None
-        if REPORTER_AVAILABLE:
-            try:
-                self._reporter = Reporter(reports_dir=str(self._reports_root))
-            except Exception as e:
-                logger.warning("Failed to initialize Reporter: %s", e)
-
-        logger.info("Runner initialized (async=%s)", self.config.enable_async)
-
-    def add_event_listener(self, event_type: RunnerEvent, callback: EventCallback):
-        self.events.on(event_type, callback)
-
-    def run_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:
-        execution_id = (
-            plan.get("plan_meta", {}).get("plan_id")
-            or datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        # Components
+        self.events = EventEmitter(webhook_url=self.config.webhook_url) if self.config.enable_events else None
+        self.circuit_breaker = (
+            CircuitBreaker(
+                failure_threshold=self.config.circuit_failure_threshold,
+                timeout_s=self.config.circuit_timeout_s,
+            )
+            if self.config.enable_circuit_breaker
+            else None
         )
 
-        metrics = RunMetrics(execution_id=execution_id, start_time=time.time())
+        # Stage registry
+        self.registry = StageRegistry()
+        self._register_default_stages()
 
-        logger.info("=" * 60)
-        logger.info("[%s] Starting test execution", execution_id)
-        logger.info("=" * 60)
+        # Execution state
+        self.run_id = str(uuid.uuid4())[:8]
+        self.metrics = RunMetrics(
+            run_id=self.run_id,
+            total_stages=0,
+            successful=0,
+            failed=0,
+            skipped=0,
+            errors=0,
+            total_duration_s=0.0,
+        )
 
-        self.events.emit(RunnerEventData(
-            event_type=RunnerEvent.RUN_START,
-            execution_id=execution_id,
-            timestamp=time.time(),
-            data={"plan": plan},
-        ))
+        # Shared context
+        self.context: Dict[str, Any] = {}
+
+        logger.info(f"✅ Runner initialized (run_id={self.run_id})")
+
+    # ---- Public API ----
+
+    def run(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute test plan - main entry point
+        """
+        start_time = time.time()
+        if self.events:
+            self.events.emit(RunnerEvent.RUN_STARTED, {"run_id": self.run_id, "plan": plan})
 
         try:
-            if self.config.validate_plan:
-                validate_plan(plan)
+            if self.config.enable_validation:
+                self._validate_plan(plan)
 
             if self.config.enable_dry_run:
-                logger.warning("[%s] DRY-RUN MODE: Skipping execution", execution_id)
-                return self._create_dry_run_result(execution_id, plan)
+                return self._dry_run(plan)
+
+            if self.config.enable_recovery:
+                self._load_checkpoint()
+
+            stages_to_run = self._get_stages_from_plan(plan)
+            execution_order = self._topological_sort(stages_to_run)
+            self.metrics.total_stages = len(execution_order)
 
             if self.config.enable_async:
-                results = _run_coro_blocking(self._execute_stages_async(plan, execution_id, metrics))
+                results = self._run_async(execution_order, plan)
             else:
-                results = self._execute_stages_sync(plan, execution_id, metrics)
+                results = self._run_sync(execution_order, plan)
 
-            overall_success = all(
-                stage.status == StageStatus.SUCCESS
-                for stage in metrics.stages
-                if stage.status != StageStatus.SKIPPED
-            )
+            if self.config.enable_learning_memory:
+                self._store_in_learning_memory()
 
-            metrics.complete(overall_success)
+            report_paths = self._generate_all_reports()
 
-            final_results = {
-                "execution_id": execution_id,
-                "overall_success": overall_success,
-                "start_time": datetime.fromtimestamp(metrics.start_time).isoformat() + "Z",
-                "end_time": datetime.fromtimestamp(metrics.end_time).isoformat() + "Z",
-                "duration_s": metrics.duration_s,
-                "stage_results": results,
-                "metrics": metrics.to_dict(),
+            self.metrics.total_duration_s = time.time() - start_time
+            self.metrics.completed_at = datetime.now().isoformat()
+
+            if self.events:
+                self.events.emit(RunnerEvent.RUN_COMPLETED, {"run_id": self.run_id, "metrics": asdict(self.metrics)})
+
+            logger.info(f"✅ Execution completed in {self.metrics.total_duration_s:.2f}s")
+
+            return {
+                "run_id": self.run_id,
+                "metrics": asdict(self.metrics),
+                "reports": report_paths,
+                "success": self.metrics.failed == 0 and self.metrics.errors == 0,
+                "results": results,
             }
-
-            self._persist_reports(final_results, execution_id)
-
-            if self.config.enable_junit_export:
-                junit_path = self._reports_root / f"{execution_id}.xml"
-                export_junit_xml(final_results, junit_path)
-                final_results["junit_report"] = str(junit_path)
-
-            self.events.emit(RunnerEventData(
-                event_type=RunnerEvent.RUN_COMPLETE,
-                execution_id=execution_id,
-                timestamp=time.time(),
-                data={"success": overall_success},
-            ))
-
-            if self._reporter and hasattr(self._reporter, "on_run_complete"):
-                try:
-                    self._reporter.on_run_complete(final_results)
-                except Exception as e:
-                    logger.warning("Reporter hook failed: %s", e)
-
-            logger.info("=" * 60)
-            logger.info(
-                "[%s] Execution completed: success=%s, duration=%.2fs",
-                execution_id,
-                overall_success,
-                metrics.duration_s,
-            )
-            logger.info("=" * 60)
-
-            return final_results
 
         except Exception as e:
-            logger.error("[%s] Execution failed: %s", execution_id, e, exc_info=True)
-            metrics.complete(False)
-            return {
-                "execution_id": execution_id,
-                "overall_success": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "metrics": metrics.to_dict(),
-            }
+            logger.error(f"❌ Run failed: {e}", exc_info=True)
+            if self.events:
+                self.events.emit(RunnerEvent.RUN_FAILED, {"run_id": self.run_id, "error": str(e)})
+            raise
 
-    # ==================== Stage Execution ====================
+    def run_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """Alias for run() — backward compatibility with older callers (e.g., demo_run.py)."""
+        return self.run(plan)
+    
+    # At end of run() method in Runner class
+    from modules.jira_reporter import JiraReporter
 
-    async def _execute_stages_async(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        metrics: RunMetrics,
-    ) -> Dict[str, Any]:
-        stages = get_enabled_stages(plan, self.config)
-        context: Dict[str, Any] = {}
+    jira = JiraReporter()
+    if result['success'] == False:
+        # Create Jira issue for failures
+        jira.create_test_execution_report(result)
+
+    # ---- Stage plumbing ----
+
+    def _register_default_stages(self) -> None:
+        self.registry.register("ui", UIStage)
+        self.registry.register("api", APIStage)
+        self.registry.register("performance", PerformanceStage)
+        self.registry.register("security", SecurityStage)
+
+    def _get_stages_from_plan(self, plan: Dict[str, Any]) -> List[str]:
+        suites = plan.get("suites", {})
+        stages: List[str] = []
+        if suites.get("ui"):
+            stages.append("ui")
+        if suites.get("api"):
+            stages.append("api")
+        if suites.get("performance"):
+            stages.append("performance")
+        if suites.get("security"):
+            stages.append("security")
+        return stages
+
+    def _topological_sort(self, stage_names: List[str]) -> List[str]:
+        graph: Dict[str, List[str]] = defaultdict(list)
+        in_degree: Dict[str, int] = defaultdict(int)
+
+        for name in stage_names:
+            stage = self.registry.get(name, self.config)
+            if not stage:
+                continue
+            deps = stage.get_dependencies()
+            for dep in deps:
+                if dep in stage_names:
+                    graph[dep].append(name)
+                    in_degree[name] += 1
+
+        q = deque([n for n in stage_names if in_degree[n] == 0])
+        result: List[str] = []
+
+        while q:
+            node = q.popleft()
+            result.append(node)
+            for neigh in graph[node]:
+                in_degree[neigh] -= 1
+                if in_degree[neigh] == 0:
+                    q.append(neigh)
+
+        if len(result) != len(stage_names):
+            logger.warning("Circular dependency detected, using original order")
+            return stage_names
+        return result
+
+    def _run_sync(self, stage_names: List[str], plan: Dict[str, Any]) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
-
-        sorted_stages = self._topological_sort(stages)
-
-        for batch in sorted_stages:
-            coros: List[Tuple[str, asyncio.Future]] = [
-                (stage.name, self._execute_stage_async(stage, plan, execution_id, context, metrics))
-                for stage in batch
-            ]
-            i = 0
-            while i < len(coros):
-                # Enforce concurrency window
-                chunk = coros[i:i + max(1, self.config.max_concurrent_stages)]
-                names = [n for n, _ in chunk]
-                tasks = [c for _, c in chunk]
-                try:
-                    chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
-                except Exception as e:
-                    chunk_results = [e]
-                for name, res in zip(names, chunk_results):
-                    if isinstance(res, Exception):
-                        logger.error("Stage '%s' failed: %s", name, res)
-                        results[name] = {"error": str(res), "status": "ERROR"}
-                    else:
-                        results[name] = res
-                i += len(chunk)
-
+        for name in stage_names:
+            results[name] = self._execute_stage(name, plan)
+            if self.config.enable_recovery:
+                self._save_checkpoint()
         return results
 
-    async def _execute_stage_async(
-        self,
-        stage: AbstractStage,
-        plan: Dict[str, Any],
-        execution_id: str,
-        context: Dict[str, Any],
-        metrics: RunMetrics,
-    ) -> Dict[str, Any]:
-        stage_metrics = StageMetrics(
-            stage_name=stage.name,
-            status=StageStatus.SUCCESS,
-            start_time=time.time(),
-        )
+    def _run_async(self, stage_names: List[str], plan: Dict[str, Any]) -> Dict[str, Any]:
+        # Placeholder for true async execution (respecting dependencies).
+        # For now, fall back to sync.
+        return self._run_sync(stage_names, plan)
 
-        cb = self._get_circuit_breaker(stage.name)
-        if not cb.can_execute():
-            logger.warning("⚠️ Circuit breaker open for stage '%s'", stage.name)
-            stage_metrics.complete(StageStatus.SKIPPED, "Circuit breaker open")
-            metrics.add_stage(stage_metrics)
-            return {"skipped": True, "reason": "circuit_breaker_open"}
+    def _execute_stage(self, name: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+        stage = self.registry.get(name, self.config)
+        if not stage:
+            logger.error(f"Stage not found: {name}")
+            return {"error": f"Stage {name} not registered"}
 
-        self.events.emit(RunnerEventData(
-            event_type=RunnerEvent.STAGE_START,
-            execution_id=execution_id,
-            timestamp=time.time(),
-            data={"stage": stage.name},
-        ))
+        if self.events:
+            self.events.emit(RunnerEvent.STAGE_STARTED, {"stage": name, "run_id": self.run_id})
 
-        last_error = None
+        valid, error = stage.validate(plan)
+        if not valid:
+            logger.error(f"Stage validation failed: {error}")
+            stage.metrics.status = StageStatus.SKIPPED
+            stage.metrics.error = error
+            self.metrics.skipped += 1
+            self.metrics.stages.append(stage.metrics)
+            return {"error": error}
 
-        for attempt in range(1, self.config.retry_max_attempts + 1):
+        for attempt in range(self.config.max_retries + 1):
             try:
-                logger.info("[%s] Stage '%s': attempt %d/%d",
-                            execution_id, stage.name, attempt, self.config.retry_max_attempts)
+                if attempt > 0:
+                    logger.info(f"🔄 Retry {attempt}/{self.config.max_retries} for stage: {name}")
+                    if self.events:
+                        self.events.emit(
+                            RunnerEvent.STAGE_RETRYING,
+                            {"stage": name, "attempt": attempt, "run_id": self.run_id},
+                        )
+                    time.sleep(self.config.retry_delay_s * (2 ** (attempt - 1)))
 
-                result = await asyncio.wait_for(
-                    stage.execute_async(plan, execution_id, context),
-                    timeout=self.config.stage_timeout_s,
-                )
+                if self.circuit_breaker:
+                    result = self.circuit_breaker.call(stage.execute, plan, self.context)
+                else:
+                    result = stage.execute(plan, self.context)
 
-                stage_metrics.complete(StageStatus.SUCCESS)
-                stage_metrics.retry_count = attempt - 1
-                cb.record_success()
-                metrics.add_stage(stage_metrics)
+                stage.metrics.retries = attempt
+                # Accurate per-status tallies
+                if stage.metrics.status == StageStatus.SUCCESS:
+                    self.metrics.successful += 1
+                elif stage.metrics.status == StageStatus.FAILURE:
+                    self.metrics.failed += 1
+                elif stage.metrics.status in (StageStatus.ERROR, StageStatus.TIMEOUT):
+                    self.metrics.errors += 1
+                elif stage.metrics.status == StageStatus.SKIPPED:
+                    self.metrics.skipped += 1
 
-                self.events.emit(RunnerEventData(
-                    event_type=RunnerEvent.STAGE_COMPLETE,
-                    execution_id=execution_id,
-                    timestamp=time.time(),
-                    data={"stage": stage.name, "success": True},
-                ))
+                self.metrics.stages.append(stage.metrics)
+
+                if self.events:
+                    self.events.emit(
+                        RunnerEvent.STAGE_COMPLETED,
+                        {"stage": name, "status": stage.metrics.status.value, "run_id": self.run_id},
+                    )
+
+                if self.config.progress_callback and self.metrics.total_stages:
+                    done = self.metrics.successful + self.metrics.failed + self.metrics.errors + self.metrics.skipped
+                    self.config.progress_callback(name, min(1.0, done / self.metrics.total_stages))
+
                 return result
 
-            except asyncio.TimeoutError:
-                last_error = TimeoutError(f"Stage timed out after {self.config.stage_timeout_s}s")
-                logger.warning("[%s] Stage '%s' timed out (attempt %d/%d)",
-                               execution_id, stage.name, attempt, self.config.retry_max_attempts)
             except Exception as e:
-                last_error = e
-                logger.warning("[%s] Stage '%s' failed (attempt %d/%d): %s",
-                               execution_id, stage.name, attempt, self.config.retry_max_attempts, e)
+                logger.error(f"Stage {name} attempt {attempt + 1} failed: {e}")
+                if attempt >= self.config.max_retries:
+                    stage.metrics.status = StageStatus.ERROR
+                    stage.metrics.error = str(e)
+                    stage.metrics.retries = attempt
+                    self.metrics.errors += 1
+                    self.metrics.stages.append(stage.metrics)
 
-            if attempt < self.config.retry_max_attempts:
-                delay = self.config.retry_delay_s * (2 ** (attempt - 1))
-                logger.info("Retrying in %.1fs...", delay)
-                self.events.emit(RunnerEventData(
-                    event_type=RunnerEvent.STAGE_RETRY,
-                    execution_id=execution_id,
-                    timestamp=time.time(),
-                    data={"stage": stage.name, "attempt": attempt, "delay": delay},
-                ))
-                await asyncio.sleep(delay)
+                    if self.events:
+                        self.events.emit(
+                            RunnerEvent.STAGE_FAILED, {"stage": name, "error": str(e), "run_id": self.run_id}
+                        )
 
-        # All retries exhausted
-        stage_metrics.complete(StageStatus.FAILURE, str(last_error))
-        stage_metrics.retry_count = self.config.retry_max_attempts
-        cb.record_failure()
-        metrics.add_stage(stage_metrics)
+                    return {"error": str(e), "traceback": traceback.format_exc()}
 
-        self.events.emit(RunnerEventData(
-            event_type=RunnerEvent.STAGE_COMPLETE,
-            execution_id=execution_id,
-            timestamp=time.time(),
-            data={"stage": stage.name, "success": False, "error": str(last_error)},
-        ))
-        return {"error": str(last_error), "status": "FAILURE"}
+        return {}
 
-    def _execute_stages_sync(
-        self,
-        plan: Dict[str, Any],
-        execution_id: str,
-        metrics: RunMetrics,
-    ) -> Dict[str, Any]:
-        stages = get_enabled_stages(plan, self.config)
-        context: Dict[str, Any] = {}
-        results: Dict[str, Any] = {}
+    # ==================== State Management ====================
 
-        for stage in stages:
+    def _save_checkpoint(self) -> None:
+        checkpoint_file = self.checkpoint_dir / f"{self.run_id}.json"
+        try:
+            checkpoint = {
+                "run_id": self.run_id,
+                "timestamp": datetime.now().isoformat(),
+                "metrics": asdict(self.metrics),
+            }
+            temp_file = checkpoint_file.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(checkpoint, f, indent=2)
+            temp_file.replace(checkpoint_file)
+            logger.debug(f"Checkpoint saved: {checkpoint_file}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+
+    def _load_checkpoint(self) -> bool:
+        checkpoint_file = self.checkpoint_dir / f"{self.run_id}.json"
+        if checkpoint_file.exists():
             try:
-                result = stage.execute_sync(plan, execution_id, context)
-                results[stage.name] = result
+                with open(checkpoint_file) as f:
+                    checkpoint = json.load(f)
+                self.metrics = RunMetrics(**checkpoint["metrics"])
+                logger.info(f"📂 Loaded checkpoint: {len(self.metrics.stages)} stages completed")
+                return True
             except Exception as e:
-                logger.error("Stage '%s' failed: %s", stage.name, e)
-                results[stage.name] = {"error": str(e), "status": "ERROR"}
-        return results
+                logger.error(f"Failed to load checkpoint: {e}")
+        return False
 
-    # ==================== Utilities ====================
+    # ==================== Learning Memory ====================
 
-    def _topological_sort(self, stages: List[AbstractStage]) -> List[List[AbstractStage]]:
-        """
-        Topologically sort stages by dependencies.
-        Returns list of batches that can run concurrently.
-        """
-        graph: Dict[str, Set[str]] = {}
-        in_degree: Dict[str, int] = {}
-        stage_map: Dict[str, AbstractStage] = {}
+    def _store_in_learning_memory(self) -> None:
+        try:
+            from modules.learning_memory import LearningMemory, TestExecution
 
-        for stage in stages:
-            stage_map[stage.name] = stage
-            graph[stage.name] = set(stage.dependencies)
-            in_degree[stage.name] = len(stage.dependencies)
+            memory = LearningMemory()
+            for stage_metrics in self.metrics.stages:
+                execution = TestExecution(
+                    test_name=stage_metrics.name,
+                    status=stage_metrics.status.value,
+                    duration_ms=int(stage_metrics.duration_s * 1000),
+                    timestamp=stage_metrics.completed_at or datetime.now().isoformat(),
+                    locators_used=[],
+                    healed_locators=[],
+                    failure_reason=stage_metrics.error,
+                )
+                memory.store_execution(execution)
+            logger.info(f"✅ Stored {len(self.metrics.stages)} results in learning memory")
+        except Exception as e:
+            logger.error(f"Failed to store in learning memory: {e}")
 
-        batches: List[List[AbstractStage]] = []
-        remaining = set(stage_map.keys())
+    # ==================== Plan Validation ====================
 
-        while remaining:
-            batch = [stage_map[name] for name in remaining if in_degree[name] == 0]
-            if not batch:
-                logger.warning("Circular dependency detected in stages")
-                batch = [stage_map[name] for name in remaining]
-                batches.append(batch)
-                break
+    def _validate_plan(self, plan: Dict[str, Any]) -> None:
+        required_keys = ["project", "suites"]
+        for key in required_keys:
+            if key not in plan:
+                raise ValueError(f"Missing required key in plan: {key}")
 
-            batches.append(batch)
-            for stage in batch:
-                remaining.remove(stage.name)
-                for name in list(remaining):
-                    if stage.name in graph[name]:
-                        in_degree[name] -= 1
+        suites = plan["suites"]
+        if not isinstance(suites, dict):
+            raise ValueError("'suites' must be a dictionary")
 
-        return batches
+        for suite_type, suite_list in suites.items():
+            if suite_list and not isinstance(suite_list, list):
+                raise ValueError(f"Suite '{suite_type}' must be a list")
 
-    def _get_circuit_breaker(self, stage_name: str) -> CircuitBreaker:
-        cb = self._circuit_breakers.get(stage_name)
-        if cb is None:
-            cb = CircuitBreaker(
-                threshold=self.config.circuit_breaker_threshold,
-                timeout_s=self.config.circuit_breaker_timeout_s,
-            )
-            self._circuit_breakers[stage_name] = cb
-        return cb
+        logger.debug("✅ Plan validation passed")
 
-    def _create_dry_run_result(self, execution_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
-        stages = get_enabled_stages(plan, self.config)
+    def _dry_run(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        stages = self._get_stages_from_plan(plan)
+        execution_order = self._topological_sort(stages)
         return {
-            "execution_id": execution_id,
+            "run_id": self.run_id,
             "dry_run": True,
-            "overall_success": True,
-            "message": "Dry-run completed successfully",
-            "applicable_stages": [stage.name for stage in stages],
-            "plan_valid": True,
+            "stages_to_execute": execution_order,
+            "total_stages": len(execution_order),
+            "validation": "passed",
         }
 
-    def _persist_reports(self, results: Dict[str, Any], execution_id: str) -> None:
-        json_path = self._reports_root / f"{execution_id}.json"
-        json_path.parent.mkdir(parents=True, exist_ok=True)
+    # ==================== Reporting ====================
 
-        tmp_path = json_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-        os.replace(tmp_path, json_path)
+    def _generate_all_reports(self) -> Dict[str, str]:
+        report_paths: Dict[str, str] = {}
 
-        html_path = self._reports_root / f"{execution_id}.html"
-        html_content = self._generate_html_report(results)
-        tmp2_path = html_path.with_suffix(".tmp")
-        tmp2_path.write_text(html_content, encoding="utf-8")
-        os.replace(tmp2_path, html_path)
+        # 1. JSONL metrics
+        jsonl_path = self.reports_dir / f"{self.run_id}_metrics.jsonl"
+        with open(jsonl_path, "w") as f:
+            for stage in self.metrics.stages:
+                f.write(json.dumps(asdict(stage)) + "\n")
+        report_paths["jsonl"] = str(jsonl_path)
 
-        logger.info("✓ Reports saved: %s, %s", json_path, html_path)
-        results["final_reports"] = {"json": str(json_path), "html": str(html_path)}
+        # 2. JUnit XML
+        junit_path = self.reports_dir / f"{self.run_id}_junit.xml"
+        self._generate_junit_xml(junit_path)
+        report_paths["junit"] = str(junit_path)
 
-    def _generate_html_report(self, results: Dict[str, Any]) -> str:
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Test Report - {results['execution_id']}</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .success {{ color: green; }}
-                .failure {{ color: red; }}
-                .header {{ background: #f0f0f0; padding: 10px; }}
-                pre {{ background: #f5f5f5; padding: 10px; overflow-x: auto; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Test Execution Report</h1>
-                <p>Execution ID: {results['execution_id']}</p>
-                <p class="{{'success' if results['overall_success'] else 'failure'}}">
-                    Status: {'SUCCESS' if results['overall_success'] else 'FAILURE'}
-                </p>
-                <p>Duration: {results['duration_s']}s</p>
-            </div>
-            <h2>Results</h2>
-            <pre>{json.dumps(results, indent=2)}</pre>
-        </body>
-        </html>
-        """
+        # 3. JSON summary
+        json_path = self.reports_dir / f"{self.run_id}_summary.json"
+        with open(json_path, "w") as f:
+            json.dump(asdict(self.metrics), f, indent=2)
+        report_paths["json"] = str(json_path)
+
+        # 4. HTML report
+        html_path = self.reports_dir / f"{self.run_id}_report.html"
+        self._generate_html_report(html_path)
+        report_paths["html"] = str(html_path)
+
+        logger.info(f"✅ Reports generated: {list(report_paths.keys())}")
+        return report_paths
+
+    def _generate_junit_xml(self, output_path: Path) -> None:
+        from xml.etree import ElementTree as ET
+
+        root = ET.Element("testsuites")
+        root.set("name", "AI QA Tests")
+        root.set("tests", str(self.metrics.total_stages))
+        root.set("time", f"{self.metrics.total_duration_s:.3f}")
+
+        testsuite = ET.SubElement(root, "testsuite")
+        testsuite.set("name", self.run_id)
+        testsuite.set("tests", str(self.metrics.total_stages))
+
+        for stage in self.metrics.stages:
+            testcase = ET.SubElement(testsuite, "testcase")
+            testcase.set("name", stage.name)
+            testcase.set("time", f"{stage.duration_s:.3f}")
+
+            if stage.status == StageStatus.FAILURE:
+                failure = ET.SubElement(testcase, "failure")
+                failure.set("message", stage.error or "Stage failed")
+                failure.text = stage.error or ""
+            elif stage.status == StageStatus.ERROR:
+                error = ET.SubElement(testcase, "error")
+                error.set("message", stage.error or "Stage error")
+                error.text = stage.error or ""
+            elif stage.status == StageStatus.SKIPPED:
+                ET.SubElement(testcase, "skipped")
+
+        ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+
+    def _generate_html_report(self, output_path: Path) -> None:
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Test Report - {self.run_id}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 20px; }}
+    .summary {{ background: #f7f7f7; padding: 16px; border-radius: 8px; }}
+    .success {{ color: #1b7f3e; }}
+    .failure {{ color: #c62828; }}
+    .error {{ color: #ef6c00; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+    th, td {{ padding: 10px; text-align: left; border: 1px solid #ddd; }}
+    th {{ background: #4CAF50; color: white; }}
+  </style>
+</head>
+<body>
+  <h1>Test Execution Report</h1>
+  <div class="summary">
+    <h2>Summary</h2>
+    <p><strong>Run ID:</strong> {self.run_id}</p>
+    <p><strong>Total Stages:</strong> {self.metrics.total_stages}</p>
+    <p><strong>Successful:</strong> <span class="success">{self.metrics.successful}</span></p>
+    <p><strong>Failed:</strong> <span class="failure">{self.metrics.failed}</span></p>
+    <p><strong>Errors:</strong> <span class="error">{self.metrics.errors}</span></p>
+    <p><strong>Duration:</strong> {self.metrics.total_duration_s:.2f}s</p>
+  </div>
+  <h2>Stage Details</h2>
+  <table>
+    <tr>
+      <th>Stage</th>
+      <th>Status</th>
+      <th>Duration</th>
+      <th>Retries</th>
+      <th>Error</th>
+    </tr>
+"""
+        for stage in self.metrics.stages:
+            status_class = stage.status.value.lower()
+            html += f"""
+    <tr>
+      <td>{stage.name}</td>
+      <td class="{status_class}">{stage.status.value}</td>
+      <td>{stage.duration_s:.2f}s</td>
+      <td>{stage.retries}</td>
+      <td>{stage.error or "-"}</td>
+    </tr>
+"""
+        html += """
+  </table>
+</body>
+</html>
+"""
+        with open(output_path, "w") as f:
+            f.write(html)
 
 
-# ==================== CLI Support ====================
+# ==================== Usage Example ====================
 
 if __name__ == "__main__":
-    import sys
+    logging.basicConfig(level=logging.INFO)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    sample_plan = {
+        "project": "https://example.com",
+        "suites": {
+            "ui": [{"name": "Login tests", "steps": ["Navigate", "Login"]}],
+            "api": [{"name": "API health", "endpoints": ["/health"]}],
+            "performance": [{"name": "Load test", "duration": 60}],
+            "security": [{"name": "Security scan"}],
+        },
+    }
+
+    cfg = RunnerConfig(
+        enable_learning_memory=True,
+        enable_visual_regression=False,
+        max_retries=2,
     )
-
-    if len(sys.argv) < 2:
-        print("Usage: python -m modules.runner <plan.json>")
-        sys.exit(1)
-
-    plan_path = Path(sys.argv[1])
-    if not plan_path.exists():
-        print(f"Plan file not found: {plan_path}")
-        sys.exit(1)
-
-    plan = json.loads(plan_path.read_text())
-
-    config = RunnerConfig.from_env()
-    runner = Runner(config=config)
-
-    result = runner.run_plan(plan)
-
-    print("\n" + "=" * 60)
-    print("EXECUTION RESULT")
-    print("=" * 60)
-    print(f"Success: {result['overall_success']}")
-    print(f"Duration: {result['duration_s']}s")
-    print("=" * 60)
-
-    sys.exit(0 if result['overall_success'] else 1)
+    runner = Runner(cfg)
+    outcome = runner.run_plan(sample_plan)  # either run() or run_plan() works
+    print(json.dumps(outcome["metrics"], indent=2))

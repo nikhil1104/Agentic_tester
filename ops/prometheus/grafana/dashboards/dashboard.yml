@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: 'AI QA Agent Dashboards'
+    orgId: 1
+    folder: 'AI QA Agent'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
